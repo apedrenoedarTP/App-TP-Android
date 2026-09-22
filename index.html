@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EDAR Torre Pacheco</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.sheetjs.com/xlsx-0.19.3/package/dist/xlsx.full.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-auth-compat.js"></script>
+</head>
+<body>
+<div class="container">
+
+  <!-- ── Floating notification icons ── -->
+  <div class="notification-icons">
+    <div class="notification-icon" id="maintenanceIcon" onclick="showPendingPreventivos()" title="Preventivos de equipo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+      </svg>
+    </div>
+    <div class="notification-icon" id="tareasProgramadasIcon" onclick="showTareasProgramadas()" title="Trabajos Periódicos">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
+      </svg>
+    </div>
+    <div class="notification-icon" id="workOrderIconTareas" onclick="showPendingTareas()" title="Tareas operativas">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+      </svg>
+    </div>
+    <div class="notification-icon" id="workOrderIconAverias" onclick="showPendingAverias()" title="Partes de avería">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+      </svg>
+    </div>
+  </div>
+
+  <div class="stock-notification-icon" id="stockIcon" onclick="showStockAlerts()" title="Alertas de stock">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
+      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+      <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+    </svg>
+  </div>
+
+  <!-- ════════════════════════════════════
+       PANTALLA PRINCIPAL
+  ════════════════════════════════════ -->
+  <div class="screen" id="mainScreen">
+    <div class="main-hero">
+      <div class="logo-mark">E</div>
+      <h1 class="title" id="mainTitleInstalacion">UTE Campo Cartagena</h1>
+      <p class="subtitle">Sistema de Gestión de Mantenimiento</p>
+    </div>
+
+    <!-- Panel botones iniciales -->
+    <div id="panelBotonesAcceso" style="width:100%;max-width:360px;display:flex;flex-direction:column;gap:12px">
+      <button class="button" style="width:100%;padding:14px;font-size:1rem" onclick="mostrarPanelLogin()">Entrar</button>
+      <button class="button back-button" style="width:100%;padding:14px;font-size:1rem" onclick="showScreen('registroScreen')">Registrarse</button>
+    </div>
+
+    <!-- Panel login (oculto por defecto) -->
+    <div id="loginEmailPanel" style="width:100%;max-width:360px;display:none;flex-direction:column;gap:8px">
+      <input id="loginEmail" type="email" placeholder="Email" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg-input,#1e1e1e);color:var(--text);font-size:0.95rem">
+      <input id="loginPassword" type="password" placeholder="Contraseña" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg-input,#1e1e1e);color:var(--text);font-size:0.95rem">
+      <button class="button" style="width:100%;padding:12px" onclick="uiLoginHibrido()">Entrar con cuenta</button>
+      <button class="button back-button" style="width:100%" onclick="ocultarPanelLogin()">← Volver</button>
+      <div id="loginMsg" style="font-size:0.82rem;color:var(--red);min-height:16px;text-align:center"></div>
+      <div id="loginRecientes" style="width:100%;display:none;flex-direction:column;gap:4px"></div>
+      <p id="loginUsuarioActivo" style="font-size:0.82rem;color:var(--green);display:none;text-align:center"></p>
+      <script>
+        document.addEventListener('DOMContentLoaded', function() {
+          ['loginEmail','loginPassword'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.addEventListener('keydown', function(e) { if (e.key === 'Enter') uiLoginHibrido(); });
+          });
+        });
+      </script>
+    </div>
+
+    <!-- Lista instalaciones (tras login) -->
+    <div id="panelInstalaciones" style="width:100%;max-width:360px;display:none;flex-direction:column;gap:8px">
+      <p id="loginUsuarioNombre" style="font-size:0.85rem;color:var(--green);text-align:center;margin-bottom:4px"></p>
+      <button type="button" id="notifBellBtn" onclick="abrirNotificaciones()" style="align-self:center;position:relative;background:none;border:none;cursor:pointer;font-size:1.4rem;margin-bottom:4px" title="Notificaciones">
+        🔔<span id="notifBadge" class="notif-badge" style="display:none"></span>
+      </button>
+      <div id="listaInstalaciones" style="display:flex;flex-direction:column;gap:8px">
+        <p style="color:var(--text-muted);font-size:0.85rem">Cargando instalaciones...</p>
+      </div>
+      <button class="button back-button" style="margin-top:10px;color:var(--red)" onclick="uiCerrarSesionCompleta()">⏻ Cerrar sesión</button>
+    </div>
+
+    <button class="button" id="enterBtn" style="display:none" disabled>Entrar</button>
+    <button class="button back-button" id="exitBtn" style="display:none">Salir</button>
+  </div>
+
+  <!-- ════════════════════════════════════
+       MENÚ PRINCIPAL
+  ════════════════════════════════════ -->
+  <div class="screen" id="menuScreen">
+    <h1 class="title">Menú</h1>
+    <p class="title-sub">Seleccione módulo</p>
+
+    <div class="menu-grid">
+      <button class="menu-btn mod-incidencias" id="incidenciasBtn">
+        <span class="icon">⚠️</span>
+        Incidencias
+      </button>
+      <button class="menu-btn mod-rutinarias" id="rutinariasBtn">
+        <span class="icon">🔄</span>
+        Rutinarias
+      </button>
+      <button class="menu-btn mod-preventivo" id="preventivoBtn">
+        <span class="icon">🛡️</span>
+        Preventivo
+      </button>
+      <button class="menu-btn mod-correctivo" id="correctivoBtn">
+        <span class="icon">🔧</span>
+        Correctivo
+      </button>
+      <button class="menu-btn mod-modificativo" id="modificativoBtn">
+        <span class="icon">✏️</span>
+        Modificativo
+      </button>
+      <button class="menu-btn mod-partes" id="workOrderBtn" style="display:none">
+        <span class="icon">📋</span>
+        Partes de trabajo
+      </button>
+      <button class="menu-btn mod-equipos menu-btn-full" id="equiposBtn" style="display:none">
+        <span class="icon">⚙️</span>
+        Equipos e inventario
+      </button>
+    </div>
+
+    <button class="button back-button" id="menuCentroOperativoBtn" onclick="showScreen('centroOperativoScreen');renderCentroOperativo()">🖥️ Centro Operativo</button>
+    <button class="button back-button" id="menuAdminBtn" style="display:none">⚙️ Administración</button>
+    <button class="button back-button" onclick="volverAInstalaciones()">← Atrás</button>
+    <button class="button back-button" style="color:var(--red)" onclick="uiCerrarSesionCompleta()">⏻ Cerrar sesión</button>
+    <p id="menuUsuarioActivo" style="font-size:1rem;font-weight:600;color:var(--text);margin-top:10px;text-align:center;letter-spacing:0.01em"></p>
+  </div>
+
+  <!-- ════════════════════════════════════
+       ADMINISTRACIÓN
+  ════════════════════════════════════ -->
+  <div class="screen" id="adminScreen">
+    <h1 class="title">Administración</h1>
+    <p class="title-sub">Configuración del sistema</p>
+
+    <div class="menu-grid">
+      <button class="menu-btn" onclick="showScreen('adminUsuariosScreen')">
+        <span class="icon">👤</span> Usuarios
+      </button>
+      <button class="menu-btn" onclick="showScreen('adminPeriodicidadScreen')">
+        <span class="icon">📅</span> Periodicidad
+      </button>
+      <button class="menu-btn" onclick="showScreen('adminInstalacionesScreen')">
+        <span class="icon">🏭</span> Instalaciones
+      </button>
+      <button class="menu-btn" onclick="showScreen('adminNotificacionesScreen')">
+        <span class="icon">📢</span> Notificaciones
+      </button>
+      <button class="menu-btn" onclick="showScreen('adminAuditoriaScreen')">
+        <span class="icon">🔥</span> Auditoría
+      </button>
+      <button class="menu-btn" onclick="showScreen('adminAsignacionesScreen')">
+        <span class="icon">📋</span> Asignaciones
+      </button>
+      <button class="menu-btn" onclick="showScreen('adminHistorialScreen')">
+        <span class="icon">📊</span> Historial
+      </button>
+      <button class="menu-btn menu-btn-full" onclick="showScreen('adminBackupScreen')">
+        <span class="icon">💾</span> Backup y restauración
+      </button>
+    </div>
+
+    <button class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>
+  </div>
+
+  <!-- ── Administración: Usuarios ── -->
+  <div class="screen" id="adminUsuariosScreen">
+    <h1 class="title">👤 Usuarios</h1>
+    <div class="form-container">
+      <div id="listaUsuariosAdmin" style="margin-bottom:12px">
+        <p style="color:var(--text-muted);font-size:0.85rem">Cargando usuarios...</p>
+      </div>
+      <button class="button" onclick="cargarUsuariosAdmin()">↺ Actualizar lista</button>
+    </div>
+    <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
+  </div>
+
+  <!-- ── Administración: Periodicidad de mantenimiento ── -->
+  <div class="screen" id="adminPeriodicidadScreen">
+    <h1 class="title">📅 Periodicidad de mantenimiento</h1>
+    <div class="form-container">
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="date" id="fechaMantenimiento">
+      </div>
+      <div class="form-group">
+        <label>Operario</label>
+        <input type="text" id="operarioMantenimiento" placeholder="Nombre del operario">
+      </div>
+      <div class="form-group">
+        <label>Equipo</label>
+        <input type="text" id="equipoPeriodicidad" list="datalist-equipos" placeholder="Nombre del equipo">
+        <button type="button" class="button" style="margin-top:6px;width:100%" onclick="equipoPicker.abrir('equipoPeriodicidad')">🔍 Buscar equipo por zona/familia</button>
+      </div>
+      <div class="form-group">
+        <label>Acción de mantenimiento</label>
+        <input type="text" id="accionMantenimiento" placeholder="Descripción de la acción">
+      </div>
+      <div class="form-group">
+        <label>Periodicidad (días)</label>
+        <input type="number" id="periodicidadDias" min="1" placeholder="Nº de días">
+      </div>
+      <div class="form-group">
+        <label>Tipo</label>
+        <select id="tipoMantenimiento">
+          <option value="preventivo">Preventivo equipos</option>
+          <option value="trabajo">Trabajo periódico</option>
+        </select>
+      </div>
+
+      <button class="button" onclick="agregarMantenimientoPeriodico()">+ Agregar mantenimiento periódico</button>
+      <button class="button" id="toggleListaMantenimientos" onclick="toggleListaMantenimientos()" style="margin-top:8px">
+        Mostrar mantenimientos
+      </button>
+      <div id="listaMantenimientosPeriodicos" style="display: none;"></div>
+    </div>
+    <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
+  </div>
+
+  <!-- ── Administración: Backup y restauración ── -->
+  <div class="screen" id="adminBackupScreen">
+    <h1 class="title">💾 Backup y restauración</h1>
+    <div class="form-container">
+      <button class="button" onclick="exportarBackup()">↓ Exportar configuración (JSON)</button>
+      <button class="button back-button" style="margin-top:6px" onclick="exportarAveriasCSV()">↓ CSV Averías</button>
+      <button class="button back-button" style="margin-top:6px" onclick="exportarTareasOperativasCSV()">↓ CSV Tareas operativas</button>
+      <button class="button back-button" style="margin-top:6px" onclick="exportarMantenimientosCSV()">↓ CSV Mantenimientos</button>
+      <input type="file" id="inputImportarMant" accept=".csv" style="display:none" onchange="importarMantenimientosCSV(this.files[0])">
+      <button class="button back-button" onclick="document.getElementById('inputImportarMant').click()">⬆️ Importar mantenimientos CSV</button>
+      <div class="form-group" style="margin-top:16px">
+        <label>Importar configuración</label>
+        <input type="file" id="backupFileInput" accept=".json">
+      </div>
+      <button class="button" onclick="importarBackup()">↑ Importar configuración</button>
+    </div>
+    <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
+  </div>
+
+  <!-- ── Administración: Instalaciones ── -->
+  <div class="screen" id="adminInstalacionesScreen">
+    <h1 class="title">🏭 Instalaciones</h1>
+    <div class="form-container">
+      <div id="listaInstalacionesAdmin" style="margin-bottom:12px"></div>
+      <div class="form-group">
+        <label>Nueva instalación (requiere PIN admin)</label>
+        <input type="text" id="nuevaInstalacionNombre" placeholder="Nombre de la instalación">
+      </div>
+      <button class="button" onclick="crearInstalacion()">+ Crear instalación</button>
+      <hr style="margin:16px 0;border-color:var(--border)">
+      <h4 style="margin-bottom:8px">Migrar datos a instalación activa</h4>
+      <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:10px">
+        Copia todos los datos de edarData a la instalación seleccionada actualmente.
+        Ejecutar solo una vez por instalación.
+      </p>
+      <button class="button back-button" onclick="migrarDatosAInstalacion()">⬆ Migrar datos a esta instalación</button>
+    </div>
+    <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
+  </div>
+
+  <!-- ── Administración: Auditoría de activos ── -->
+  <div class="screen" id="adminAuditoriaScreen">
+    <h1 class="title">🔥 Auditoría de activos</h1>
+    <div class="form-container">
+      <button class="button" onclick="renderAuditoriaActivos()">🔍 Ejecutar auditoría</button>
+      <button class="button back-button" style="margin-top:6px" onclick="exportarAuditoriaXLSX()">⬇️ Exportar auditoría XLSX</button>
+      <div id="auditoriaActivosResult" style="margin-top:12px"></div>
+    </div>
+    <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
+  </div>
+
+  <!-- ── Administración: Panel de asignaciones ── -->
+  <div class="screen" id="adminAsignacionesScreen">
+    <h1 class="title">📋 Panel de asignaciones</h1>
+    <div class="form-container">
+      <button class="button" onclick="renderPanelAsignaciones()">🔄 Cargar trabajos pendientes</button>
+      <div id="panelAsignacionesResult" style="margin-top:12px"></div>
+      <button class="button" onclick="renderCumplimientoOperarios()" style="margin-top:10px">📊 Ver cumplimiento por operario</button>
+      <div id="cumplimientoResult" style="margin-top:12px"></div>
+      <button class="button" onclick="renderHistorialConfirmaciones()" style="margin-top:10px">📜 Ver historial de confirmaciones</button>
+      <div id="historialConfirmacionesResult" style="margin-top:12px"></div>
+    </div>
+    <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
+  </div>
+
+  <!-- ── Administración: Notificaciones ── -->
+  <div class="screen" id="adminNotificacionesScreen">
+    <h1 class="title">📢 Notificaciones</h1>
+    <div class="form-container">
+      <div class="form-group">
+        <label>Mensaje</label>
+        <textarea id="notifAdminMensaje" rows="3" placeholder="Escribe el aviso para los usuarios..." style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg-input,#1e1e1e);color:var(--text);font-size:0.9rem"></textarea>
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="notifAdminTodos"> Enviar a todos los usuarios
+        </label>
+        <div id="notifAdminDestinatarios" style="margin-top:8px;max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
+      </div>
+      <button class="button" onclick="enviarNotificacionAdmin()">📨 Enviar notificación</button>
+      <hr style="margin:16px 0;border-color:var(--border)">
+      <h4 style="margin-bottom:8px">Notificaciones enviadas</h4>
+      <div id="notifAdminLista"></div>
+    </div>
+    <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
+  </div>
+
+  <!-- ── Administración: Historial de trabajos por usuario ── -->
+  <div class="screen" id="adminHistorialScreen">
+    <h1 class="title">📊 Historial por usuario</h1>
+    <div class="form-container">
+      <div class="form-group">
+        <label>Usuario</label>
+        <select id="historialUsuarioSelect" onchange="cargarHistorialUsuarioAdmin(this.value)" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg-input,#1e1e1e);color:var(--text)">
+          <option value="">— Selecciona un usuario —</option>
+        </select>
+      </div>
+      <div id="historialUsuarioResumen" style="margin:10px 0"></div>
+      <div id="historialUsuarioDetalle" style="max-height:320px;overflow-y:auto"></div>
+    </div>
+    <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
+  </div>
+
+  <!-- ════════════════════════════════════
+       PLANIFICACIÓN DE MANTENIMIENTO
+
+  <!-- ════════════════════════════════════
+       PLANIFICACIÓN DE MANTENIMIENTO
+  ════════════════════════════════════ -->
+  <div class="screen" id="planificacionScreen">
+    <h1 class="title">📅 Planificación</h1>
+    <div id="planificacionResumen" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px"></div>
+    <div id="planificacionResult"></div>
+    <button class="button" onclick="exportarPlanificacionXLSX()" style="margin-top:10px">📥 Exportar XLSX</button>
+    <button class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>
+  </div>
+
+<!-- REGISTRO DE USUARIO -->
+<div class="screen" id="registroScreen">
+  <div class="main-hero">
+    <div class="logo-mark">E</div>
+    <h1 class="title">Solicitar acceso</h1>
+    <p class="subtitle">Tu solicitud será revisada por el administrador</p>
+  </div>
+  <div class="form-container" style="width:100%;max-width:400px">
+    <div class="form-group">
+      <label>Nombre completo</label>
+      <input type="text" id="regNombre" placeholder="Nombre y apellidos">
+    </div>
+    <div class="form-group">
+      <label>Email</label>
+      <input type="email" id="regEmail" placeholder="correo@empresa.com">
+    </div>
+    <div class="form-group">
+      <label>Contraseña</label>
+      <input type="password" id="regPassword" placeholder="Mínimo 6 caracteres">
+    </div>
+    <div class="form-group">
+      <label>Repetir contraseña</label>
+      <input type="password" id="regPassword2" placeholder="Repite la contraseña">
+    </div>
+    <button class="button" onclick="uiRegistrarUsuario()" style="width:100%;margin-top:8px">Solicitar acceso</button>
+    <p id="msgRegistroPendiente" style="display:none;font-size:0.82rem;color:var(--green);text-align:center;margin-top:10px">Tu cuenta quedará activa tras aprobación del administrador.</p>
+    <div id="regMsg" style="font-size:0.85rem;margin-top:10px;min-height:20px"></div>
+  </div>
+  <button class="button back-button" style="margin-top:16px" onclick="showScreen('mainScreen')">← Volver</button>
+</div>
+
+  <!-- ════════════════════════════════════
+       INCIDENCIAS
+  ════════════════════════════════════ -->
+  <div class="screen" id="incidenciasScreen">
+    <h1 class="title">Incidencias</h1>
+    <p class="title-sub">Registrar incidencia</p>
+
+        <div class="form-container">
+      <h3>Nueva incidencia</h3>
+      <input type="hidden" id="incidenciaEquipo" value="N/A">
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="date" id="fechaIncidencia">
+      </div>
+      <div class="form-group">
+        <label>Operario</label>
+        <input type="text" id="operarioIncidencia" placeholder="Nombre del operario">
+      </div>
+      <div class="form-group">
+        <label>Descripción</label>
+        <textarea id="descripcionIncidencia" rows="4" placeholder="Descripción de la incidencia"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="button" onclick="exportarIncidenciaGitHub(); document.getElementById('fechaIncidencia').value=''; document.getElementById('operarioIncidencia').value=''; document.getElementById('descripcionIncidencia').value='';">Reportar</button>
+        <button class="button back-button" onclick="exportarIncidenciaLocal(); document.getElementById('fechaIncidencia').value=''; document.getElementById('operarioIncidencia').value=''; document.getElementById('descripcionIncidencia').value='';">↓ Descargar</button>
+      </div>
+    </div>
+
+    <button class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>
+  </div>
+
+  <!-- ════════════════════════════════════
+       RUTINARIAS
+  ════════════════════════════════════ -->
+  <div class="screen" id="rutinariasScreen">
+    <h1 class="title">Rutinarias</h1>
+    <p class="title-sub">Registrar rutina</p>
+
+    <div class="form-container">
+      <h3>Nueva rutina</h3>
+      <input type="hidden" id="rutinaEquipo" value="N/A">
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="date" id="fechaRutina">
+      </div>
+      <input type="hidden" id="operarioRutina">
+      <div class="form-group">
+        <label>Descripción</label>
+        <textarea id="descripcionRutina" rows="4" placeholder="Descripción de la rutina"></textarea>
+      </div>
+      <button class="button" onclick="exportarRutinaGitHub(); document.getElementById('fechaRutina').value=''; document.getElementById('operarioRutina').value=''; document.getElementById('descripcionRutina').value='';">Reportar rutina</button>
+    </div>
+
+    <button class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>
+  </div>
+
+  <!-- ════════════════════════════════════
+       PREVENTIVO
+  ════════════════════════════════════ -->
+  <div class="screen" id="preventivoScreen">
+    <h1 class="title">Preventivo</h1>
+    <p class="title-sub">Registrar mantenimiento preventivo</p>
+
+    <div class="form-container">
+      <h3>Nuevo preventivo</h3>
+      <input type="hidden" id="gravedadPreventivo" value="N/A">
+      <div class="form-group">
+        <label>Equipo</label>
+        <input type="text" id="preventivoEquipo" list="datalist-equipos" placeholder="Nombre del equipo">
+        <button type="button" class="button" style="margin-top:6px;width:100%" onclick="equipoPicker.abrir('preventivoEquipo')">🔍 Buscar equipo por zona/familia</button>
+      </div>
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="date" id="fechaPreventivo">
+      </div>
+      <div class="form-group">
+        <label>Operario</label>
+        <input type="text" id="operarioPreventivo" placeholder="Nombre del operario">
+      </div>
+      <div class="form-group">
+        <label>Descripción</label>
+        <textarea id="descripcionPreventivo" rows="4" placeholder="Descripción del preventivo"></textarea>
+      </div>
+      <button class="button" onclick="exportarPreventivoGitHub(); ['fechaPreventivo','operarioPreventivo','descripcionPreventivo','preventivoEquipo'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});">Reportar preventivo</button>
+    </div>
+
+    <button class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>
+  </div>
+
+  <!-- ════════════════════════════════════
+       CORRECTIVO
+  ════════════════════════════════════ -->
+  <div class="screen" id="correctivoScreen">
+    <h1 class="title">Correctivo</h1>
+    <p class="title-sub">Registrar mantenimiento correctivo</p>
+
+    <div class="form-container">
+      <h3>Nuevo correctivo</h3>
+      <input type="hidden" id="operarioCorrectivo" value="N/A">
+      <input type="hidden" id="gravedadCorrectivo" value="N/A">
+      <input type="hidden" id="solucionCorrectivo" value="N/A">
+      <div class="form-group">
+        <label>Equipo</label>
+        <input type="text" id="correctivoEquipo" list="datalist-equipos" placeholder="Nombre del equipo">
+        <button type="button" class="button" style="margin-top:6px;width:100%" onclick="equipoPicker.abrir('correctivoEquipo')">🔍 Buscar equipo por zona/familia</button>
+      </div>
+      <div class="form-group">
+        <label>Fecha inicio</label>
+        <input type="date" id="fechaCorrectivo">
+      </div>
+      <div class="form-group">
+        <label>Avería</label>
+        <input type="text" id="averiaCorrectivo" placeholder="Descripción de la avería">
+      </div>
+      <div class="form-group">
+        <label>Causa</label>
+        <input type="text" id="causaCorrectivo" placeholder="Causa raíz">
+      </div>
+      <div class="form-group">
+        <label>Fecha fin</label>
+        <input type="date" id="fechaFinCorrectivo">
+      </div>
+      <div class="form-group">
+        <label>Descripción</label>
+        <textarea id="descripcionCorrectivo" rows="4" placeholder="Descripción del correctivo"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="button" onclick="guardarCorrectivo()">Guardar (en curso)</button>
+        <button class="button" onclick="exportarCorrectivoGitHub(); ['correctivoEquipo','fechaCorrectivo','averiaCorrectivo','causaCorrectivo','fechaFinCorrectivo','descripcionCorrectivo'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});">Reportar (finalizar)</button>
+      </div>
+    </div>
+
+    <button class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>
+  </div>
+
+  <!-- ════════════════════════════════════
+       MODIFICATIVO
+  ════════════════════════════════════ -->
+  <div class="screen" id="modificativoScreen">
+    <h1 class="title">Modificativo</h1>
+    <p class="title-sub">Registrar modificación</p>
+
+    <div class="form-container">
+      <h3>Nueva modificación</h3>
+      <input type="hidden" id="operarioModificativo" value="N/A">
+      <input type="hidden" id="motivoModificativo" value="N/A">
+      <div class="form-group">
+        <label>Equipo</label>
+        <input type="text" id="equipoModificativo" list="datalist-equipos" placeholder="Nombre del equipo">
+        <button type="button" class="button" style="margin-top:6px;width:100%" onclick="equipoPicker.abrir('equipoModificativo')">🔍 Buscar equipo por zona/familia</button>
+      </div>
+      <div class="form-group">
+        <label>Fecha inicio</label>
+        <input type="date" id="fechaModificativo">
+      </div>
+      <div class="form-group">
+        <label>Avería</label>
+        <input type="text" id="averiaModificativo" placeholder="Descripción de la avería">
+      </div>
+      <div class="form-group">
+        <label>Causa</label>
+        <input type="text" id="causaModificativo" placeholder="Causa raíz">
+      </div>
+      <div class="form-group">
+        <label>Fecha fin</label>
+        <input type="date" id="fechaFinModificativo">
+      </div>
+      <div class="form-group">
+        <label>Descripción</label>
+        <textarea id="descripcionModificativo" rows="4" placeholder="Descripción del modificativo"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="button" onclick="guardarModificativo()">Guardar (en curso)</button>
+        <button class="button" onclick="exportarModificativoGitHub(); ['equipoModificativo','fechaModificativo','averiaModificativo','causaModificativo','fechaFinModificativo','descripcionModificativo'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});">Reportar (finalizar)</button>
+      </div>
+    </div>
+
+    <button class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>
+  </div>
+
+  <!-- ════════════════════════════════════
+       PARTES DE TRABAJO
+  ════════════════════════════════════ -->
+  <div class="screen" id="workOrderScreen">
+    <h1 class="title">Partes de trabajo</h1>
+    <p class="title-sub">Crear nuevo parte</p>
+
+    <div class="form-container">
+      <h3>Nuevo parte de trabajo</h3>
+      <div class="form-group">
+        <label>Fecha</label>
+        <input type="date" id="fechaWorkOrder">
+      </div>
+      <div class="form-group">
+        <label>Operario</label>
+        <select id="operarioWorkOrder"><option value="">— Seleccione operario —</option></select>
+      </div>
+      <div class="form-group admin-only" id="bloqueAsignadoWorkOrder" style="display:none">
+        <label>Asignar a (usuario(s) sistema)</label>
+        <div id="asignadoWorkOrder" style="max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:6px"></div>
+      </div>
+      <div class="form-group admin-only" id="bloqueAsignadoWorkOrderExt" style="display:none">
+        <label>Asignar a (externo / turno / empresa)</label>
+        <input type="text" id="asignadoWorkOrderExt" placeholder="Ej: Tecnicwater, Turno tarde...">
+      </div>
+      <div class="form-group">
+        <label>Equipo</label>
+        <input type="text" id="workOrderEquipo" list="datalist-equipos" placeholder="Nombre del equipo">
+        <button type="button" class="button" style="margin-top:6px;width:100%" onclick="equipoPicker.abrir('workOrderEquipo')">🔍 Buscar equipo por zona/familia</button>
+      </div>
+      <div class="form-group">
+        <label>Tipo de parte *</label>
+        <select id="tipoWorkOrder" required>
+          <option value="">— Seleccione tipo —</option>
+          <option value="averia">Avería (correctivo)</option>
+          <option value="tarea">Tarea operativa (rutina)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Descripción</label>
+        <textarea id="descripcionWorkOrder" rows="4" placeholder="Descripción del parte de trabajo"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Fotografía</label>
+        <div class="photo-controls">
+          <button class="button" onclick="capturePhoto()">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="13" r="3"/><path d="M5 7H3a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-2l-2-3H9L7 7z"/>
+            </svg>
+            Cámara
+          </button>
+          <button class="button" onclick="document.getElementById('photoInput').click()">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            Subir foto
+          </button>
+        </div>
+        <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none" onchange="handlePhotoUpload(event)">
+        <div id="photoPreview" class="photo-preview"></div>
+      </div>
+      <button class="button save-button" onclick="createWorkOrder()">+ Crear parte de trabajo</button>
+    </div>
+
+    <div id="workOrdersList"></div>
+
+    <button class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>
+  </div>
+
+  <!-- ════════════════════════════════════
+       EQUIPOS
+  ════════════════════════════════════ -->
+  <div class="screen" id="equiposScreen">
+    <h1 class="title">Equipos</h1>
+    <p class="title-sub">Inventario y recambios</p>
+
+    <div class="form-container">
+      <h3>Importar biblioteca de equipos</h3>
+      <div class="form-group">
+        <label>Archivo JSON</label>
+        <input type="file" id="equiposJsonFileInput" accept=".json">
+      </div>
+      <button class="button" onclick="importarBibliotecaEquipos()">↑ Importar JSON</button>
+      <div class="form-group" style="margin-top:8px">
+        <label>Importar CSV</label>
+        <input type="file" id="equiposCSVFileInput" accept=".csv,.txt">
+      </div>
+      <button class="button" onclick="(function(){const f=document.getElementById('equiposCSVFileInput').files[0];if(!f){alert('Seleccione un archivo CSV');return;}const r=new FileReader();r.onload=e=>importarCSVEquipos(e.target.result);r.readAsText(f,'UTF-8');})()">↑ Importar CSV</button>
+      <button class="button" style="margin-top:8px" onclick="exportarBibliotecaEquipos()">↓ Exportar biblioteca</button>
+      <button class="button back-button" style="margin-top:8px" onclick="restaurarBackupEquiposLocal()">↺ Restaurar backup local</button>
+    </div>
+
+    <div class="form-container">
+      <h3>Añadir equipo manualmente</h3>
+      <div class="form-group">
+        <label>Familia</label>
+        <input type="text" id="equiposFamilia" placeholder="Nombre de la familia">
+      </div>
+      <div class="form-group">
+        <label>Zona</label>
+        <input type="text" id="equiposZona" placeholder="Nombre de la zona">
+      </div>
+      <div class="form-group">
+        <label>Equipo</label>
+        <input type="text" id="equiposEquipo" placeholder="Nombre del equipo">
+      </div>
+      <div class="form-group">
+        <label>Modelo</label>
+        <input type="text" id="equiposItem" placeholder="Nombre del modelo">
+      </div>
+      <div class="form-group">
+        <label>Recambio</label>
+        <input type="text" id="equiposRecambio" placeholder="Nombre del recambio">
+      </div>
+      <div class="form-group">
+        <label>Cantidad en stock</label>
+        <input type="number" id="equiposCantidad" min="0" placeholder="0">
+      </div>
+      <button class="button save-button" onclick="guardarEquipo()">+ Guardar equipo</button>
+    </div>
+
+    <div class="form-container" id="equiposGuardadosList">
+      <h3>Equipos guardados</h3>
+      <div id="listaEquiposGuardados"></div>
+    </div>
+
+    <button class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>
+  </div>
+
+  <!-- ════════════════════════════════════
+       CENTRO OPERATIVO
+  ════════════════════════════════════ -->
+  <div class="screen" id="centroOperativoScreen">
+    <h1 class="title">🖥️ Centro Operativo</h1>
+    <div id="centroOperativoResult"></div>
+    <button class="button back-button" style="margin-top:14px" onclick="showScreen('menuScreen')">← Volver al menú</button>
+  </div>
+
+  <datalist id="datalist-equipos"></datalist>
+  <div class="background-logo"></div>
+</div>
+
+<script src="app.js"></script>
+
+<!-- ── Selector jerárquico de equipos ── -->
+<div id="equipoPickerModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center">
+  <div style="background:var(--bg-card,#1c2333);border:1px solid var(--border-light,#3a4560);border-radius:12px;padding:24px;width:min(540px,95vw);max-height:80vh;overflow-y:auto;position:relative">
+    <button onclick="equipoPicker.cerrar()" style="position:absolute;top:12px;right:12px;background:none;border:none;color:var(--text-primary,#fff);font-size:1.4rem;cursor:pointer">×</button>
+    <h3 id="equipoPickerTitulo" style="margin:0 0 16px;font-size:1rem"></h3>
+    <div id="equipoPickerBreadcrumb" style="font-size:0.8rem;color:var(--text-muted,#8892a4);margin-bottom:12px"></div>
+    <div id="equipoPickerLista" style="display:flex;flex-direction:column;gap:6px"></div>
+    <button onclick="equipoPicker.atras()" id="equipoPickerAtras" class="button back-button" style="margin-top:16px;display:none">← Atrás</button>
+  </div>
+</div>
+
+<div id="notifModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,0.6);align-items:center;justify-content:center">
+  <div style="background:var(--bg-card,#1c2333);border:1px solid var(--border-light,#3a4560);border-radius:12px;padding:24px;width:min(480px,95vw);max-height:80vh;overflow-y:auto;position:relative">
+    <button onclick="cerrarNotificaciones()" style="position:absolute;top:12px;right:12px;background:none;border:none;color:var(--text-primary,#fff);font-size:1.4rem;cursor:pointer">×</button>
+    <h3 style="margin:0 0 16px;font-size:1rem">🔔 Notificaciones</h3>
+    <div id="notifModalLista" style="display:flex;flex-direction:column;gap:10px"></div>
+  </div>
+</div>
+</body>
+</html>
