@@ -76,26 +76,7 @@ window.equiposDb = {
 // PROD  → hostname de producción   → Firebase indusguard-f2a96  (datos reales)
 // DEV   → localhost / 127.0.0.1 / file:// / red local → Firebase gestion-mantenimiento-2775
 // Para forzar DEV en cualquier host: FORCE_DEV = true  (nunca subir a prod)
-const FORCE_DEV = false;
-
-const IS_DEV = FORCE_DEV || (
-  window.location.hostname === 'localhost'      ||
-  window.location.hostname === '127.0.0.1'      ||
-  window.location.hostname === ''               ||
-  window.location.hostname.startsWith('192.168.')
-);
-
-const firebaseConfigPROD = {
-  apiKey: "AIzaSyC7TBO1hG-dHd44dPfaALbrOWMoDmeWLoU",
-  authDomain: "indusguard-f2a96.firebaseapp.com",
-  databaseURL: "https://indusguard-f2a96-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "indusguard-f2a96",
-  storageBucket: "indusguard-f2a96.firebasestorage.app",
-  messagingSenderId: "174969449574",
-  appId: "1:174969449574:web:b71d3bc3b9bd11efc9d1a7"
-};
-
-const firebaseConfigDEV = {
+const firebaseConfig = {
   apiKey: "AIzaSyCZCnrS2x6NN-90xWiHxp-GEptykBDlEx4",
   authDomain: "gestion-mantenimiento-2775.firebaseapp.com",
   databaseURL: "https://gestion-mantenimiento-2775-default-rtdb.europe-west1.firebasedatabase.app",
@@ -105,11 +86,9 @@ const firebaseConfigDEV = {
   appId: "1:617941743072:web:34dbddade02d7d7321a785"
 };
 
-const firebaseConfig = IS_DEV ? firebaseConfigDEV : firebaseConfigPROD;
-
 // Claves de localStorage aisladas por entorno
-const LS_KEY_APP     = IS_DEV ? 'edarData_dev'  : 'edarData';
-const LS_KEY_EQUIPOS = IS_DEV ? 'equiposDb_dev' : 'equiposDb';
+const LS_KEY_APP     = 'edarData';
+const LS_KEY_EQUIPOS = 'equiposDb';
 
 const GITHUB_CONFIG = {
   token: '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',
@@ -5004,13 +4983,7 @@ async function _decidirPantallaInicial() {
 window._decidirPantallaInicial = _decidirPantallaInicial;
 
 document.addEventListener('DOMContentLoaded', async function() {
-  if (IS_DEV) {
-    const b = document.createElement('div');
-    b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b91c1c;color:#fff;text-align:center;font-family:monospace;font-size:12px;font-weight:bold;padding:5px 12px;pointer-events:none';
-    b.textContent = '⚠ MODO DESARROLLO — Firebase: gestion-mantenimiento-2775 · localStorage: ' + LS_KEY_APP;
-    document.body.insertBefore(b, document.body.firstChild);
-    console.warn('[DEV] Firebase: gestion-mantenimiento-2775 | ls:', LS_KEY_APP);
-  }
+
   try {
     await new Promise((resolve) => auth.onAuthStateChanged(() => resolve()));
 
