@@ -1,4 +1,4 @@
-/* =============================================================================
+﻿/* =============================================================================
    EDAR Torre Pacheco — app.js
    Secciones:
      1. ESTADO          — datos de la aplicación
@@ -91,7 +91,7 @@ const LS_KEY_APP     = 'edarData';
 const LS_KEY_EQUIPOS = 'equiposDb';
 
 const GITHUB_CONFIG = {
-  token: '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',
+  token: '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',
   owner: 'apedrenoedarTP',
   repo: 'Gesti-n-EDAR',
   branch: 'main'
