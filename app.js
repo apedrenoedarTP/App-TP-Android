@@ -91,7 +91,6 @@ const LS_KEY_APP     = 'edarData';
 const LS_KEY_EQUIPOS = 'equiposDb';
 
 const GITHUB_CONFIG = {
-  token: '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',
   owner: 'apedrenoedarTP',
   repo: 'Gesti-n-EDAR',
   branch: 'main'
@@ -101,6 +100,13 @@ const ADMIN_PIN = '2378';
 
 if (!firebase.apps.length) {
   firebase.initializeApp(firebaseConfig);
+}
+
+const functionsClient = firebase.app().functions('europe-west1');
+async function _llamarGithubExport(payload) {
+  const callable = functionsClient.httpsCallable('githubExport');
+  const result = await callable(payload);
+  return result.data;
 }
 
 const auth = firebase.auth();
@@ -665,34 +671,20 @@ async function uploadToGitHub(path, content, message) {
 async function _exportarInformeGitHub(nuevaFila, nombreHoja, archivo, mensajeGit, mensajeExito) {
   try {
     const path = `instalaciones/${INST()}/${archivo}.xlsx`;
-    const url  = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${path}`;
-    const headers = {
-      'Authorization': `token ${GITHUB_CONFIG.token}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'Content-Type': 'application/json'
-    };
 
-    // Single GET: SHA + existing rows
     let sha = null;
     let rows = [];
-    const getRes = await fetch(url, { headers });
-    if (getRes.ok) {
-      const fileData = await getRes.json();
-      sha = fileData.sha;
-      const raw = Uint8Array.from(atob(fileData.content.replace(/\n/g, '')), c => c.charCodeAt(0));
+    const getResult = await _llamarGithubExport({ action: 'get', path });
+    if (getResult.exists) {
+      sha = getResult.sha;
+      const raw = Uint8Array.from(atob(getResult.content.replace(/\n/g, '')), c => c.charCodeAt(0));
       const wb  = XLSX.read(raw, { type: 'array' });
       rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-    } else if (getRes.status !== 404) {
-      throw new Error(`GitHub GET error: ${getRes.status}`);
     }
 
     rows.push(nuevaFila);
     const encoded = await blobToBase64(crearExcelBlob(rows, nombreHoja));
-    const body = { message: mensajeGit, content: encoded, branch: GITHUB_CONFIG.branch };
-    if (sha) body.sha = sha;
-
-    const putRes = await fetch(url, { method: 'PUT', headers, body: JSON.stringify(body) });
-    if (!putRes.ok) throw new Error(`GitHub PUT error ${putRes.status}: ${await putRes.text()}`);
+    await _llamarGithubExport({ action: 'put', path, content: encoded, message: mensajeGit, sha });
     alert(mensajeExito);
   } catch (error) {
     console.error(`Error exporting ${archivo}:`, error);
@@ -720,31 +712,20 @@ async function exportarWorkOrderToExcel(workOrder) {
     Material:         workOrder.material || '',
     RecambiosUsados:  (workOrder.spareParts || []).map(p => `${p.nombre}:${p.cantidad}`).join(', ')
   };
-  // Reuses _exportarInformeGitHub for consistent append logic; throws on failure
-  // so completeWorkOrder can catch and show specific message
   const instActiva = localStorage.getItem('instalacionActiva') || INST();
-  const path = `instalaciones/${instActiva}/partes`;
-  const url  = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${path}.xlsx`;
-  const headers = {
-    'Authorization': `token ${GITHUB_CONFIG.token}`,
-    'Accept': 'application/vnd.github.v3+json',
-    'Content-Type': 'application/json'
-  };
+  const path = `instalaciones/${instActiva}/partes.xlsx`;
+
   let sha = null; let rows = [];
-  const getRes = await fetch(url, { headers });
-  if (getRes.ok) {
-    const fd = await getRes.json(); sha = fd.sha;
-    const raw = Uint8Array.from(atob(fd.content.replace(/\n/g, '')), c => c.charCodeAt(0));
-    rows = XLSX.utils.sheet_to_json(XLSX.read(raw, { type: 'array' }).Sheets[XLSX.read(raw, { type: 'array' }).SheetNames[0]]);
-  } else if (getRes.status !== 404) {
-    throw new Error(`GitHub GET error: ${getRes.status}`);
+  const getResult = await _llamarGithubExport({ action: 'get', path });
+  if (getResult.exists) {
+    sha = getResult.sha;
+    const raw = Uint8Array.from(atob(getResult.content.replace(/\n/g, '')), c => c.charCodeAt(0));
+    const wbParsed = XLSX.read(raw, { type: 'array' });
+    rows = XLSX.utils.sheet_to_json(wbParsed.Sheets[wbParsed.SheetNames[0]]);
   }
   rows.push(fila);
   const encoded = await blobToBase64(crearExcelBlob(rows, 'Partes'));
-  const body = { message: `Parte completado: ${workOrder.equipo}`, content: encoded, branch: GITHUB_CONFIG.branch };
-  if (sha) body.sha = sha;
-  const putRes = await fetch(url, { method: 'PUT', headers, body: JSON.stringify(body) });
-  if (!putRes.ok) throw new Error(`GitHub PUT error ${putRes.status}: ${await putRes.text()}`);
+  await _llamarGithubExport({ action: 'put', path, content: encoded, message: `Parte completado: ${workOrder.equipo}`, sha });
   console.log('partes.xlsx actualizado en GitHub');
 }
 
