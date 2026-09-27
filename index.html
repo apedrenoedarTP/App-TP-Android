@@ -4,6 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>EDAR Torre Pacheco</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#2f80ed">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.sheetjs.com/xlsx-0.19.3/package/dist/xlsx.full.min.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js"></script>
@@ -197,10 +202,6 @@
       <div class="form-group">
         <label>Fecha</label>
         <input type="date" id="fechaMantenimiento">
-      </div>
-      <div class="form-group">
-        <label>Operario</label>
-        <input type="text" id="operarioMantenimiento" placeholder="Nombre del operario">
       </div>
       <div class="form-group">
         <label>Equipo</label>
@@ -573,10 +574,6 @@
         <label>Fecha</label>
         <input type="date" id="fechaWorkOrder">
       </div>
-      <div class="form-group">
-        <label>Operario</label>
-        <select id="operarioWorkOrder"><option value="">— Seleccione operario —</option></select>
-      </div>
       <div class="form-group admin-only" id="bloqueAsignadoWorkOrder" style="display:none">
         <label>Asignar a (usuario(s) sistema)</label>
         <div id="asignadoWorkOrder" style="max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:6px"></div>
@@ -722,5 +719,12 @@
     <div id="notifModalLista" style="display:flex;flex-direction:column;gap:10px"></div>
   </div>
 </div>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(err => console.warn('No se pudo registrar el service worker:', err));
+    });
+  }
+</script>
 </body>
 </html>
