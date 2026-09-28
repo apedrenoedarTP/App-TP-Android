@@ -405,6 +405,17 @@ function _getAsignadosNombres(registro) {
   return [];
 }
 
+
+// Texto a mostrar como "Operario": siempre derivado de quién está realmente asignado.
+// Si no hay nadie asignado (registros antiguos), cae al campo operario heredado.
+function _operarioDisplay(registro) {
+  if (!registro) return '';
+  const nombres = _getAsignadosNombres(registro);
+  if (nombres.length) return nombres.join(', ');
+  if (registro.asignadoAExterno) return registro.asignadoAExterno;
+  return registro.operario || '';
+}
+
 // Ordena un array por una propiedad de texto
 function ordenarPorPropiedad(arr, prop) {
   return [...arr].sort((a, b) => {
@@ -708,7 +719,7 @@ async function exportarWorkOrderToExcel(workOrder) {
     Equipo:           workOrder.equipo || '',
     Descripcion:      workOrder.descripcion || '',
     Tipo:             workOrder.tipo || 'parte',
-    Operario:         workOrder.operario || '',
+    Operario:         _operarioDisplay(workOrder),
     Material:         workOrder.material || '',
     RecambiosUsados:  (workOrder.spareParts || []).map(p => `${p.nombre}:${p.cantidad}`).join(', ')
   };
@@ -1924,18 +1935,15 @@ function _getOrderArray(orderId) {
 
 // Inicializa la pantalla de parte de trabajo reseteando todos sus campos
 async function showWorkOrderScreen() {
-  ['fechaWorkOrder', 'operarioWorkOrder', 'workOrderEquipo', 'descripcionWorkOrder'].forEach(id => {
+  ['fechaWorkOrder', 'workOrderEquipo', 'descripcionWorkOrder'].forEach(id => {
     document.getElementById(id).value = '';
   });
-  const operarioSelect = document.getElementById('operarioWorkOrder');
-  const equipoSelect   = document.getElementById('workOrderEquipo');
-  operarioSelect.innerHTML = '<option value="">Seleccione un operario</option>';
-  equipoSelect.innerHTML   = '<option value="">Seleccione un equipo</option>';
+  const equipoSelect = document.getElementById('workOrderEquipo');
+  equipoSelect.innerHTML = '<option value="">Seleccione un equipo</option>';
   const esAdmin = localStorage.getItem('usuarioRol') === 'admin';
   const bloqueAsig    = document.getElementById('bloqueAsignadoWorkOrder');
   const bloqueAsigExt = document.getElementById('bloqueAsignadoWorkOrderExt');
   if (esAdmin) {
-    await _cargarOperariosSelect('operarioWorkOrder');
     if (bloqueAsig) bloqueAsig.style.display = 'block';
     if (bloqueAsigExt) bloqueAsigExt.style.display = 'block';
     await _cargarOperariosCheckboxes('asignadoWorkOrder', []);
@@ -1944,11 +1952,6 @@ async function showWorkOrderScreen() {
   } else {
     if (bloqueAsig) bloqueAsig.style.display = 'none';
     if (bloqueAsigExt) bloqueAsigExt.style.display = 'none';
-    db.operarios.forEach(op => {
-      const opt = document.createElement('option');
-      opt.value = opt.textContent = op;
-      operarioSelect.appendChild(opt);
-    });
   }
   db.equipos.forEach(eq => {
     const opt = document.createElement('option');
@@ -2011,25 +2014,34 @@ function toggleListaMantenimientos() {
 
 async function createWorkOrder() {
   const fecha      = document.getElementById('fechaWorkOrder').value;
-  const opSel    = document.getElementById('operarioWorkOrder');
-  const operario = opSel.selectedOptions[0]?.dataset.nombre || opSel.value;
   const equipo     = document.getElementById('workOrderEquipo').value;
   const descripcion = document.getElementById('descripcionWorkOrder').value;
   const photoData  = document.getElementById('photoPreview').dataset.photoData;
   const tipo       = document.getElementById('tipoWorkOrder').value; // 'averia' | 'tarea'
 
-  if (!fecha || !operario || !equipo || !descripcion || !tipo) {
+  if (!fecha || !equipo || !descripcion || !tipo) {
     alert('Por favor complete todos los campos, incluido el tipo de parte');
     return;
   }
 
   const esAdmin = localStorage.getItem('usuarioRol') === 'admin';
-  const asigContainer = document.getElementById('asignadoWorkOrder');
-  const marcadosAsig = (esAdmin && asigContainer) ? Array.from(asigContainer.querySelectorAll('input[type=checkbox]:checked')) : [];
-  const asignadoAUids    = marcadosAsig.map(c => c.value);
-  const asignadoANombres = marcadosAsig.map(c => c.dataset.nombre);
-  const asignadoExtEl = document.getElementById('asignadoWorkOrderExt');
-  const asignadoAExterno = (!asignadoAUids.length && asignadoExtEl) ? (asignadoExtEl.value.trim() || '') : '';
+  let asignadoAUids, asignadoANombres, asignadoAExterno;
+
+  if (esAdmin) {
+    const asigContainer = document.getElementById('asignadoWorkOrder');
+    const marcadosAsig = asigContainer ? Array.from(asigContainer.querySelectorAll('input[type=checkbox]:checked')) : [];
+    asignadoAUids    = marcadosAsig.map(c => c.value);
+    asignadoANombres = marcadosAsig.map(c => c.dataset.nombre);
+    const asignadoExtEl = document.getElementById('asignadoWorkOrderExt');
+    asignadoAExterno = (!asignadoAUids.length && asignadoExtEl) ? (asignadoExtEl.value.trim() || '') : '';
+  } else {
+    // Un operario que crea su propio parte queda asignado a sí mismo automáticamente
+    asignadoAUids    = [_sesionAutor().uid];
+    asignadoANombres = [_sesionAutor().nombre];
+    asignadoAExterno = '';
+  }
+
+  const operario = asignadoANombres.join(', ') || asignadoAExterno || '';
 
   const workOrder = {
     id:               Date.now(),
@@ -2066,7 +2078,7 @@ async function createWorkOrder() {
     db[dbKey] = clean;
     localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
 
-    ['fechaWorkOrder', 'operarioWorkOrder', 'workOrderEquipo', 'descripcionWorkOrder'].forEach(id => {
+    ['fechaWorkOrder', 'workOrderEquipo', 'descripcionWorkOrder'].forEach(id => {
       document.getElementById(id).value = '';
     });
     document.getElementById('tipoWorkOrder').value = '';
@@ -2349,16 +2361,16 @@ async function _cargarOperariosCheckboxes(containerId, uidsActuales) {
 
 async function agregarMantenimientoPeriodico() {
   const fecha        = document.getElementById('fechaMantenimiento').value;
-  const operario     = document.getElementById('operarioMantenimiento').value;
   const equipo       = document.getElementById('equipoPeriodicidad').value;
   const accion       = document.getElementById('accionMantenimiento').value;
   const periodicidad = parseInt(document.getElementById('periodicidadDias').value);
   const tipoEl       = document.getElementById('tipoMantenimiento');
   const tipo         = tipoEl ? tipoEl.value : 'preventivo';
   const esTarea      = tipo === 'trabajo';
+  const operario     = '';
 
   // Equipo obligatorio solo para preventivos
-  if (!fecha || !operario || (!esTarea && !equipo) || !accion || isNaN(periodicidad)) {
+  if (!fecha || (!esTarea && !equipo) || !accion || isNaN(periodicidad)) {
     alert('Por favor complete todos los campos correctamente');
     return;
   }
@@ -2825,11 +2837,11 @@ async function completeMaintenance(id, buttonElement) {
   );
 
   // Entrada de historial — inmutable una vez guardada
-  const entradaHistorial = {
+    const entradaHistorial = {
     fechaEjecucion,
     fechaProgramada,
     diasDesviacion,
-    operario:         m.operario,
+    operario:         _operarioDisplay(m),
     observaciones:    '',
     cerradoPorUid:    _sesionAutor().uid,
     cerradoPorNombre: _sesionAutor().nombre,
@@ -2845,7 +2857,7 @@ async function completeMaintenance(id, buttonElement) {
       FechaProgramada:  fechaProgramada,
       FechaEjecucion:   fechaEjecucion,
       DiasDesviacion:   diasDesviacion,
-      Operario:         m.operario,
+      Operario:         _operarioDisplay(m),
       Estado:           'completado'
     }], 'Mantenimiento Periódico');
 
