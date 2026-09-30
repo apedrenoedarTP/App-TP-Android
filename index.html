@@ -501,7 +501,16 @@
       </div>
       <div class="form-group">
         <label>Fecha fin</label>
-        <input type="date" id="fechaFinCorrectivo">
+                <input type="date" id="fechaFinCorrectivo" />
+      </div>
+      <div class="form-group">
+        <label>Prioridad</label>
+        <select id="prioridadCorrectivo">
+          <option value="urgente">Urgente</option>
+          <option value="alta">Alta</option>
+          <option value="normal" selected>Normal</option>
+          <option value="baja">Baja</option>
+        </select>
       </div>
       <div class="form-group">
         <label>Descripción</label>
@@ -546,7 +555,16 @@
       </div>
       <div class="form-group">
         <label>Fecha fin</label>
-        <input type="date" id="fechaFinModificativo">
+        <input type="date" id="fechaFinModificativo" />
+      </div>
+      <div class="form-group">
+        <label>Prioridad</label>
+        <select id="prioridadModificativo">
+          <option value="urgente">Urgente</option>
+          <option value="alta">Alta</option>
+          <option value="normal" selected>Normal</option>
+          <option value="baja">Baja</option>
+        </select>
       </div>
       <div class="form-group">
         <label>Descripción</label>
@@ -592,7 +610,16 @@
         <select id="tipoWorkOrder" required>
           <option value="">— Seleccione tipo —</option>
           <option value="averia">Avería (correctivo)</option>
-          <option value="tarea">Tarea operativa (rutina)</option>
+          <option value='tarea'>Tarea operativa (rutina)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Prioridad</label>
+        <select id="prioridadWorkOrder">
+          <option value="urgente">Urgente</option>
+          <option value="alta">Alta</option>
+          <option value="normal" selected>Normal</option>
+          <option value="baja">Baja</option>
         </select>
       </div>
       <div class="form-group">
