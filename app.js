@@ -1,4 +1,4 @@
-﻿/* =============================================================================
+/* =============================================================================
    EDAR Torre Pacheco — app.js
    Secciones:
      1. ESTADO          — datos de la aplicación
@@ -89,12 +89,6 @@ const firebaseConfig = {
 // Claves de localStorage aisladas por entorno
 const LS_KEY_APP     = 'edarData';
 const LS_KEY_EQUIPOS = 'equiposDb';
-
-const GITHUB_CONFIG = {
-  owner: 'apedrenoedarTP',
-  repo: 'Gesti-n-EDAR',
-  branch: 'main'
-};
 
 const ADMIN_PIN = '2378';
 
@@ -424,6 +418,40 @@ function ordenarPorPropiedad(arr, prop) {
   });
 }
 
+// ── Prioridad de partes de trabajo ──
+const PRIORIDADES = {
+  urgente: { label: 'Urgente', color: '#d32f2f', orden: 0 },
+  alta:    { label: 'Alta',    color: '#f57c00', orden: 1 },
+  normal:  { label: 'Normal',  color: '#1976d2', orden: 2 },
+  baja:    { label: 'Baja',    color: '#757575', orden: 3 }
+};
+function prioridadKey(p) { return PRIORIDADES[p] ? p : 'normal'; }
+function prioridadBadgeHtml(p) {
+  const k = prioridadKey(p);
+  return `<span style="background:${PRIORIDADES[k].color};color:#fff;font-size:0.7em;padding:2px 8px;border-radius:10px;margin-left:8px;vertical-align:middle;font-weight:600">${PRIORIDADES[k].label}</span>`;
+}
+function prioridadSelectHtml(id, p) {
+  const k = prioridadKey(p);
+  const esAdmin = localStorage.getItem('usuarioRol') === 'admin';
+  return `<select id="edit-prioridad-${id}" ${esAdmin ? '' : 'disabled class="opacity-muted"'}>` +
+    Object.keys(PRIORIDADES).map(key =>
+      `<option value="${key}" ${key === k ? 'selected' : ''}>${PRIORIDADES[key].label}</option>`
+    ).join('') + `</select>`;
+}
+// Ordena pendientes: 'prioridad' (desempata por equipo), 'fechaProgramada' o 'equipo'
+function ordenarPendientes(arr, criterio) {
+  const porEquipo = (a, b) => (a.equipo || '').localeCompare(b.equipo || '');
+  return [...arr].sort((a, b) => {
+    if (criterio === 'prioridad') {
+      return PRIORIDADES[prioridadKey(a.prioridad)].orden - PRIORIDADES[prioridadKey(b.prioridad)].orden || porEquipo(a, b);
+    }
+    if (criterio === 'fechaProgramada') {
+      return (a.fechaProgramada || a.fecha || '').localeCompare(b.fechaProgramada || b.fecha || '') || porEquipo(a, b);
+    }
+    return porEquipo(a, b);
+  });
+}
+
 // Convierte un Blob a Base64
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
@@ -647,36 +675,6 @@ async function loadFromLocalStorage() {
 /* =============================================================================
    5. EXCEL / GITHUB — exportación de informes
 ============================================================================= */
-
-async function uploadToGitHub(path, content, message) {
-  const url = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${path}`;
-  const headers = {
-    'Authorization': `token ${GITHUB_CONFIG.token}`,
-    'Accept': 'application/vnd.github.v3+json',
-    'Content-Type': 'application/json'
-  };
-
-  // GET to obtain SHA (needed for update); 404 means file doesn't exist yet — that's fine
-  let sha = null;
-  const getRes = await fetch(url, { headers });
-  if (getRes.ok) {
-    const fileData = await getRes.json();
-    sha = fileData.sha;
-  } else if (getRes.status !== 404) {
-    // Any status other than 404 is unexpected
-    throw new Error(`GitHub GET error: ${getRes.status}`);
-  }
-
-  const body = { message, content, branch: GITHUB_CONFIG.branch };
-  if (sha) body.sha = sha;
-
-  const putRes = await fetch(url, { method: 'PUT', headers, body: JSON.stringify(body) });
-  if (!putRes.ok) {
-    const errText = await putRes.text();
-    throw new Error(`GitHub PUT error ${putRes.status}: ${errText}`);
-  }
-  return putRes.json();
-}
 
 // Exporta una fila a un único archivo Excel persistente en GitHub (append)
 async function _exportarInformeGitHub(nuevaFila, nombreHoja, archivo, mensajeGit, mensajeExito) {
@@ -930,9 +928,9 @@ function closePopup(buttonElement) {
 function showPendingWorkOrders() {
   const content = _crearPopup('Partes de Trabajo Pendientes');
 
-  const pendingOrders = ordenarPorPropiedad(
-    _filtrarPorRol((db.workOrders || []).filter(o => o && o.estado === 'pendiente' && o.familia !== 'MANTENIMIENTO')),
-    'equipo'
+  const pendingOrders = ordenarPendientes(
+    _filtrarPorRol((db.workOrders || []).filter(o => o && o.estado === 'pendiente' && o.familia !== "MANTENIMIENTO")),
+    'prioridad'
   );
 
   if (!pendingOrders.length) {
@@ -948,7 +946,7 @@ function showPendingWorkOrders() {
     div.className = 'pending-record overdue';
     div.dataset.id = order.id;
     div.innerHTML = `
-      <h4>${order.equipo || ''}</h4>
+    <h4>${order.equipo || ''} ${prioridadBadgeHtml(order.prioridad)}</h4>
       <p><strong>Programado:</strong> ${order.fechaProgramada || order.fecha || ''} &nbsp;|&nbsp; <strong>Creado:</strong> ${order.fechaCreacion ? order.fechaCreacion.split('T')[0] : ''}</p>
       <p>Operario: <input type="text" value="${order.operario || ''}" onchange="updateWorkOrderOperator(${order.id}, this.value)"></p>
       <p>Descripción: ${order.descripcion || ''}</p>
@@ -963,7 +961,9 @@ function showPendingWorkOrders() {
         </div>
         <div class="form-group">
           <label>Operario:</label>
-          <input type="text" id="edit-operator-${order.id}" value="${order.operario || ''}">
+            <input type="text" id="edit-operator-${order.id}" value="${order.operario || ''}" />
+        </div>
+        <div class="form-group"><label>Prioridad:</label>${prioridadSelectHtml(order.id, order.prioridad)}
         </div>
         <div class="form-group">
           <label>Consumo de Recambios:</label>
@@ -1147,7 +1147,7 @@ function showPreventivosEquipos() {
       <h4>${m.equipo}</h4>
       <p><strong>Acción:</strong> ${m.accion}</p>
       <p><strong>Periodicidad:</strong> ${m.periodicidad} días</p>
-      <p><strong>Próxima fecha:</strong> ${nextDate.toLocaleDateString()}</p>
+      <p><strong>Vencido desde:</strong> ${nextDate.toLocaleDateString()}</p>
       <p><strong>Asignado a:</strong> ${_getAsignadosNombres(m).join(', ') || m.asignadoAExterno || '<span class="opacity-muted">Sin asignar</span>'}</p>
       ${esAdmin ? '<button class="button" onclick="toggleAsigForm(\'' + m.id + '\')">👤 Asignar</button>' : ''}
       <button class="button" onclick="completeMaintenance('${m.id}', this)">Marcar como completado</button>
@@ -1181,7 +1181,7 @@ function showTareasProgramadas() {
       <h4>${m.equipo || m.accion || 'Trabajo periódico'}</h4>
       <p><strong>Acción:</strong> ${m.accion || '—'}</p>
       <p><strong>Periodicidad:</strong> ${m.periodicidad} días</p>
-      <p><strong>Próxima fecha:</strong> ${nextDate.toLocaleDateString()}</p>
+      <p><strong>Vencido desde:</strong> ${nextDate.toLocaleDateString()}</p>
       <p><strong>Asignado a:</strong> ${_getAsignadosNombres(m).join(', ') || m.asignadoAExterno || '<span class="opacity-muted">Sin asignar</span>'}</p>
       ${esAdmin ? '<button class="button" onclick="toggleAsigForm(\'' + m.id + '\')">👤 Asignar</button>' : ''}
       <button class="button" onclick="completeMaintenance('${m.id}', this)">Marcar como completado</button>
@@ -1289,6 +1289,7 @@ function showPendingAverias() {
         ${asignados.map(n => `<option value="${n}">${n}</option>`).join('')}
       </select>
       <select id="pendFiltroOrdenAv" onchange="_aplicarFiltroPendientesAverias()">
+        <option value="prioridad">Ordenar: Prioridad</option>
         <option value="equipo">Ordenar: Equipo</option>
         <option value="fechaProgramada">Ordenar: Fecha programada</option>
       </select>
@@ -1301,7 +1302,7 @@ function showPendingAverias() {
 function _aplicarFiltroPendientesAverias() {
   const estado = document.getElementById('pendFiltroEstadoAv')?.value || '';
   const asig   = document.getElementById('pendFiltroAsigAv')?.value || '';
-  const orden  = document.getElementById('pendFiltroOrdenAv')?.value || 'equipo';
+  const orden  = document.getElementById('pendFiltroOrdenAv')?.value || 'prioridad';
   const cont   = document.getElementById('pendListAv');
   if (!cont) return;
 
@@ -1310,7 +1311,7 @@ function _aplicarFiltroPendientesAverias() {
     if (asig && !_getAsignadosNombres(o).includes(asig)) return false;
     return true;
   });
-  lista = ordenarPorPropiedad(lista, orden);
+  lista = ordenarPendientes(lista, orden);
 
   cont.innerHTML = '';
   if (!lista.length) { cont.innerHTML = '<p>No hay partes que coincidan con el filtro</p>'; return; }
@@ -1326,7 +1327,7 @@ function _crearItemPendienteAveria(order) {
   div.dataset.id = order.id;
   const esAdmin = localStorage.getItem('usuarioRol') === 'admin';
   div.innerHTML = `
-    <h4>${order.equipo || ''}</h4>
+    <h4>${order.equipo || ''} ${prioridadBadgeHtml(order.prioridad)}</h4>
     <p><strong>Programado:</strong> ${order.fechaProgramada || order.fecha || ''} &nbsp;|&nbsp; <strong>Creado:</strong> ${order.fechaCreacion ? order.fechaCreacion.split('T')[0] : ''}</p>
     <p><strong>Descripción:</strong> ${order.descripcion || ''}</p>
     <p><strong>Estado:</strong> ${order.estado || ''}</p>
@@ -1335,6 +1336,9 @@ function _crearItemPendienteAveria(order) {
     <button class="button" onclick="editWorkOrder(${order.id})">Editar</button>
     <button class="button" onclick="completeWorkOrder(${order.id}, this)">Marcar como completado</button>
     <div class="work-order-edit-form" id="edit-form-${order.id}">
+      <div class="form-group"><label>Equipo:</label><input type="text" id="edit-equipo-${order.id}" value="${order.equipo || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
+      <div class="form-group"><label>Fecha programada:</label><input type="date" id="edit-fecha-${order.id}" value="${order.fechaProgramada || order.fecha || ''}"></div>
+            <div class="form-group"><label>Prioridad:</label>${prioridadSelectHtml(order.id, order.prioridad)}</div>
       <div class="form-group"><label>Descripción:</label><textarea id="edit-description-${order.id}">${order.descripcion || ''}</textarea></div>
       <div class="form-group"><label>Operario:</label><input type="text" id="edit-operator-${order.id}" value="${order.operario || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
       ${esAdmin ? `
@@ -1378,6 +1382,7 @@ function showPendingTareas() {
         ${asignados.map(n => `<option value="${n}">${n}</option>`).join('')}
       </select>
       <select id="pendFiltroOrdenTa" onchange="_aplicarFiltroPendientesTareas()">
+        <option value="prioridad">Ordenar: Prioridad</option>
         <option value="equipo">Ordenar: Equipo</option>
         <option value="fechaProgramada">Ordenar: Fecha programada</option>
       </select>
@@ -1390,7 +1395,7 @@ function showPendingTareas() {
 function _aplicarFiltroPendientesTareas() {
   const estado = document.getElementById('pendFiltroEstadoTa')?.value || '';
   const asig   = document.getElementById('pendFiltroAsigTa')?.value || '';
-  const orden  = document.getElementById('pendFiltroOrdenTa')?.value || 'equipo';
+  const orden  = document.getElementById('pendFiltroOrdenTa')?.value || 'prioridad';
   const cont   = document.getElementById('pendListTa');
   if (!cont) return;
 
@@ -1399,7 +1404,7 @@ function _aplicarFiltroPendientesTareas() {
     if (asig && !_getAsignadosNombres(o).includes(asig)) return false;
     return true;
   });
-  lista = ordenarPorPropiedad(lista, orden);
+  lista = ordenarPendientes(lista, orden);
 
   cont.innerHTML = '';
   if (!lista.length) { cont.innerHTML = '<p>No hay tareas que coincidan con el filtro</p>'; return; }
@@ -1415,7 +1420,7 @@ function _crearItemPendienteTarea(order) {
   div.dataset.id = order.id;
   const esAdmin = localStorage.getItem('usuarioRol') === 'admin';
   div.innerHTML = `
-    <h4>${order.equipo || ''}</h4>
+    <h4>${order.equipo || ''} ${prioridadBadgeHtml(order.prioridad)}</h4>
     <p><strong>Programado:</strong> ${order.fechaProgramada || order.fecha || ''} &nbsp;|&nbsp; <strong>Creado:</strong> ${order.fechaCreacion ? order.fechaCreacion.split('T')[0] : ''}</p>
     <p><strong>Descripción:</strong> ${order.descripcion || ''}</p>
     <p><strong>Estado:</strong> ${order.estado || ''}</p>
@@ -1424,6 +1429,9 @@ function _crearItemPendienteTarea(order) {
     <button class="button" onclick="editWorkOrder(${order.id})">Editar</button>
     <button class="button" onclick="completeWorkOrder(${order.id}, this)">Marcar como completado</button>
     <div class="work-order-edit-form" id="edit-form-${order.id}">
+      <div class="form-group"><label>Equipo:</label><input type="text" id="edit-equipo-${order.id}" value="${order.equipo || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
+      <div class="form-group"><label>Fecha programada:</label><input type="date" id="edit-fecha-${order.id}" value="${order.fechaProgramada || order.fecha || ''}"></div>
+            <div class="form-group"><label>Prioridad:</label>${prioridadSelectHtml(order.id, order.prioridad)}</div>
       <div class="form-group"><label>Descripción:</label><textarea id="edit-description-${order.id}">${order.descripcion || ''}</textarea></div>
       <div class="form-group"><label>Operario:</label><input type="text" id="edit-operator-${order.id}" value="${order.operario || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
       ${esAdmin ? `
@@ -1566,6 +1574,8 @@ function renderUsedSpareParts(spareParts) {
   return spareParts.map(p => `<div class="spare-part-item">${p.nombre}: ${p.cantidad} unidades</div>`).join('');
 }
 
+let _filtroMantenimientosTexto = '';
+
 async function actualizarListaMantenimientos() {
   const listaDiv = document.getElementById('listaMantenimientosPeriodicos');
   if (!listaDiv) return;
@@ -1576,10 +1586,39 @@ async function actualizarListaMantenimientos() {
     return;
   }
 
-  const validos     = db.mantenimientosPeriodicos.filter(m => m && m.accion);
+  // ── Buscador (por equipo o acción) ───────────────────────────────────────
+  const buscadorDiv = document.createElement('div');
+  buscadorDiv.className = 'form-group';
+  buscadorDiv.style.marginBottom = '10px';
+  buscadorDiv.innerHTML = `<input type="text" id="filtroMantenimientos" placeholder="🔍 Buscar por equipo o acción..." style="width:100%">`;
+  listaDiv.appendChild(buscadorDiv);
+  const inputFiltro = buscadorDiv.querySelector('#filtroMantenimientos');
+  inputFiltro.value = _filtroMantenimientosTexto;
+  inputFiltro.addEventListener('input', (e) => {
+    _filtroMantenimientosTexto = e.target.value;
+    const cursorPos = e.target.selectionStart;
+    actualizarListaMantenimientos();
+    const nuevoInput = document.getElementById('filtroMantenimientos');
+    if (nuevoInput) { nuevoInput.focus(); nuevoInput.setSelectionRange(cursorPos, cursorPos); }
+  });
+
+  const filtroTexto  = _filtroMantenimientosTexto.trim().toLowerCase();
+  const cumpleFiltro = m => !filtroTexto
+    || (m.equipo || '').toLowerCase().includes(filtroTexto)
+    || (m.accion || '').toLowerCase().includes(filtroTexto);
+
+  const validos     = db.mantenimientosPeriodicos.filter(m => m && m.accion && cumpleFiltro(m));
   const preventivos = validos.filter(m => m.tipo === 'preventivo' || (m.tipo !== 'trabajo' && m.equipo && m.equipo.trim() !== ''));
   const tareas      = validos.filter(m => m.tipo === 'trabajo');
   actualizarContadorMantenimientos(validos.length);
+
+  // Orden común: vencidos primero, luego alfabético
+  function _ordenVencidosPrimero(a, b, claveA, claveB) {
+    const va = esMantenimientoVencido(a) ? 0 : 1;
+    const vb = esMantenimientoVencido(b) ? 0 : 1;
+    if (va !== vb) return va - vb;
+    return (claveA || '').localeCompare(claveB || '');
+  }
 
   // Helper que crea una tarjeta de mantenimiento idéntica para ambos tipos
   function crearCardMantenimiento(m, body) {
@@ -1639,10 +1678,10 @@ async function actualizarListaMantenimientos() {
   }
 
   // ── BLOQUE 1: Preventivos de Equipos ─────────────────────────────────────
-  const secPrev = document.createElement('div');
-  secPrev.className = 'eq-familia eq-collapsed';
-  secPrev.style.borderColor = 'var(--blue)';
   const vencPrev = preventivos.filter(esMantenimientoVencido).length;
+  const secPrev = document.createElement('div');
+  secPrev.className = 'eq-familia' + ((vencPrev || filtroTexto) ? '' : ' eq-collapsed');
+  secPrev.style.borderColor = 'var(--blue)';
   secPrev.innerHTML = `
     <div class="eq-familia-header" onclick="this.parentElement.classList.toggle('eq-collapsed')"
          style="background:var(--blue-dim)">
@@ -1657,14 +1696,14 @@ async function actualizarListaMantenimientos() {
 
   preventivos
     .slice()
-    .sort((a, b) => (a.equipo || '').localeCompare(b.equipo || ''))
+    .sort((a, b) => _ordenVencidosPrimero(a, b, a.equipo, b.equipo))
     .forEach(m => crearCardMantenimiento(m, bodyPrev));
 
   // ── BLOQUE 2: Trabajos Periódicos ─────────────────────────────────────────
-  const secTar = document.createElement('div');
-  secTar.className = 'eq-familia eq-collapsed';
-  secTar.style.borderColor = 'var(--green)';
   const vencTar = tareas.filter(esMantenimientoVencido).length;
+  const secTar = document.createElement('div');
+  secTar.className = 'eq-familia' + ((vencTar || filtroTexto) ? '' : ' eq-collapsed');
+  secTar.style.borderColor = 'var(--green)';
   secTar.innerHTML = `
     <div class="eq-familia-header" onclick="this.parentElement.classList.toggle('eq-collapsed')"
          style="background:rgba(39,174,96,0.12)">
@@ -1679,7 +1718,7 @@ async function actualizarListaMantenimientos() {
 
   tareas
     .slice()
-    .sort((a, b) => (a.equipo || a.accion || '').localeCompare(b.equipo || b.accion || ''))
+    .sort((a, b) => _ordenVencidosPrimero(a, b, a.equipo || a.accion, b.equipo || b.accion))
     .forEach(m => crearCardMantenimiento(m, bodyTar));
 }
 
@@ -1938,7 +1977,9 @@ async function showWorkOrderScreen() {
   ['fechaWorkOrder', 'workOrderEquipo', 'descripcionWorkOrder'].forEach(id => {
     document.getElementById(id).value = '';
   });
-  const equipoSelect = document.getElementById('workOrderEquipo');
+  const prioSelInit = document.getElementById('prioridadWorkOrder');
+  if (prioSelInit) prioSelInit.value = 'normal';
+  const equipoSelect = document.getElementById("workOrderEquipo");
   equipoSelect.innerHTML = '<option value="">Seleccione un equipo</option>';
   const esAdmin = localStorage.getItem('usuarioRol') === 'admin';
   const bloqueAsig    = document.getElementById('bloqueAsignadoWorkOrder');
@@ -2017,7 +2058,8 @@ async function createWorkOrder() {
   const equipo     = document.getElementById('workOrderEquipo').value;
   const descripcion = document.getElementById('descripcionWorkOrder').value;
   const photoData  = document.getElementById('photoPreview').dataset.photoData;
-  const tipo       = document.getElementById('tipoWorkOrder').value; // 'averia' | 'tarea'
+  const tipo       = document.getElementById("tipoWorkOrder").value; // 'averia' | 'tarea'
+  const prioridad  = prioridadKey((document.getElementById('prioridadWorkOrder') || {}).value);
 
   if (!fecha || !equipo || !descripcion || !tipo) {
     alert('Por favor complete todos los campos, incluido el tipo de parte');
@@ -2055,7 +2097,8 @@ async function createWorkOrder() {
     equipo,
     descripcion,
     estado:           'en_curso',
-    tipo,
+    prioridad,
+    tipo: tipo,
     spareParts:       [],
     asignadoAUids,
     asignadoANombres,
@@ -2081,7 +2124,10 @@ async function createWorkOrder() {
     ['fechaWorkOrder', 'workOrderEquipo', 'descripcionWorkOrder'].forEach(id => {
       document.getElementById(id).value = '';
     });
-    document.getElementById('tipoWorkOrder').value = '';
+    const tipoSel = document.getElementById('tipoWorkOrder');
+    if (tipoSel) tipoSel.value = '';
+    const prioSel = document.getElementById('prioridadWorkOrder');
+    if (prioSel) prioSel.value = 'normal';
     const preview = document.getElementById('photoPreview');
     preview.innerHTML = '';
     preview.dataset.photoData = '';
@@ -2116,13 +2162,18 @@ async function saveWorkOrderChanges(orderId) {
   const order = arr.find(wo => wo && wo.id === orderId);
   if (!order) return;
 
+  const newEquipo      = document.getElementById(`edit-equipo-${orderId}`)?.value.trim();
+  const newFecha       = document.getElementById(`edit-fecha-${orderId}`)?.value;
   const newDescription = document.getElementById(`edit-description-${orderId}`).value;
   const newOperator    = document.getElementById(`edit-operator-${orderId}`).value;
   const materialEl     = document.getElementById(`edit-material-${orderId}`);
 
   if (!newDescription) { alert('La descripción no puede estar vacía'); return; }
+  if (newEquipo === '') { alert('El equipo no puede estar vacío'); return; }
 
   try {
+    if (newEquipo) order.equipo = newEquipo;
+    if (newFecha) { order.fechaProgramada = newFecha; order.fecha = newFecha; }
     order.descripcion = newDescription;
     if (newOperator) order.operario = newOperator;
     const selAsig = document.getElementById(`edit-asignado-${orderId}`);
@@ -2142,6 +2193,8 @@ async function saveWorkOrderChanges(orderId) {
       }
     }
     if (materialEl) order.material = materialEl.value;
+        const prioEl = document.getElementById(`edit-prioridad-${orderId}`);
+    if (prioEl && !prioEl.disabled) order.prioridad = prioridadKey(prioEl.value);
     await realDb.ref(ref).set(arr);
     localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
     _hideEditForm(`edit-form-${orderId}`);
@@ -4138,11 +4191,11 @@ async function _obtenerAvisosVencidosUsuario() {
       [...tareas, ...averias].forEach(t => {
         const abierto = !t.estado || t.estado === 'pendiente' || t.estado === 'en_curso';
         if (abierto && _getAsignadosUids(t).includes(uid) && t.fechaProgramada && new Date(t.fechaProgramada) < ahora) {
-          avisos.push({ titulo: [t.equipo, t.accion || t.descripcion].filter(Boolean).join(' — '), instalacion: nombreInst, tipo: t.tipo === 'averia' ? 'averia' : 'tarea' });
+          avisos.push({ titulo: prioridadBadgeHtml(t.prioridad) + ' ' + [t.equipo, t.accion || t.descripcion].filter(Boolean).join(' — '), instalacion: nombreInst, tipo: t.tipo === 'averia' ? 'averia' : 'tarea', prioridad: prioridadKey(t.prioridad) });
         }
       });
     }));
-    return avisos;
+    return avisos.sort((a, b) => PRIORIDADES[prioridadKey(a.prioridad)].orden - PRIORIDADES[prioridadKey(b.prioridad)].orden);
   } catch(e) { console.warn('_obtenerAvisosVencidosUsuario error:', e); return []; }
 }
 
@@ -4681,13 +4734,14 @@ function guardarCorrectivo() {
     fechaCreacion: new Date().toISOString(), fechaInicio: new Date().toISOString(),
     fechaFin: null, averia, causa, fechaFinPrevista: fechaFin,
     descripcion, estado: 'en_curso', tipo: 'averia', origen: 'correctivo', spareParts: [],
+        prioridad: prioridadKey((document.getElementById('prioridadCorrectivo') || {}).value),
     creadoPorUid: _sesionAutor().uid, creadoPorNombre: _sesionAutor().nombre, creadoPorEmail: _sesionAutor().email
   };
   if (!db.workOrdersAverias) db.workOrdersAverias = [];
   db.workOrdersAverias.push(parte);
   realDb.ref(`instalaciones/${INST()}/workOrdersAverias`).set(db.workOrdersAverias).catch(e => console.warn(e));
   localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
-  ['correctivoEquipo','fechaCorrectivo','averiaCorrectivo','causaCorrectivo','fechaFinCorrectivo','descripcionCorrectivo'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';})
+  ['correctivoEquipo','fechaCorrectivo','averiaCorrectivo','causaCorrectivo','fechaFinCorrectivo','descripcionCorrectivo','prioridadCorrectivo'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';})
   updateNotificationIcons();
   alert('Correctivo guardado en curso');
 }
@@ -4705,13 +4759,14 @@ function guardarModificativo() {
     fechaCreacion: new Date().toISOString(), fechaInicio: new Date().toISOString(),
     fechaFin: null, averia, causa, fechaFinPrevista: fechaFin,
     descripcion, estado: 'en_curso', tipo: 'averia', origen: 'modificativo', spareParts: [],
+        prioridad: prioridadKey((document.getElementById('prioridadModificativo') || {}).value),
     creadoPorUid: _sesionAutor().uid, creadoPorNombre: _sesionAutor().nombre, creadoPorEmail: _sesionAutor().email
   };
   if (!db.workOrdersAverias) db.workOrdersAverias = [];
   db.workOrdersAverias.push(parte);
   realDb.ref(`instalaciones/${INST()}/workOrdersAverias`).set(db.workOrdersAverias).catch(e => console.warn(e));
   localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
-  ['equipoModificativo','fechaModificativo','averiaModificativo','causaModificativo','fechaFinModificativo','descripcionModificativo'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';})
+  ['equipoModificativo','fechaModificativo','averiaModificativo','causaModificativo','fechaFinModificativo','descripcionModificativo','prioridadModificativo'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';})
   updateNotificationIcons();
   alert('Modificativo guardado en curso');
 }
@@ -5273,7 +5328,7 @@ function renderCentroOperativo() {
           const etiqueta = [t.equipo, t.accion || t.descripcion].filter(Boolean).join(' — ');
           const asignado = _getAsignadosNombres(t).join(', ') || t.asignadoAExterno || '<span class="opacity-muted">Sin asignar</span>';
           return '<div style="margin-bottom:8px;padding:6px 8px;border-radius:5px;border:1px solid var(--red)">'
-            + '<p style="font-size:0.83rem;font-weight:600;margin:0 0 3px">⚠ ' + etiqueta + '</p>'
+            + '<p style="font-size:0.83rem;font-weight:600;margin:0 0 3px">⚠ ' + etiqueta + (t._tipo === 'periodico' ? '' : prioridadBadgeHtml(t.prioridad)) + '</p>'
             + '<p style="font-size:0.78rem;margin:0">Asignado a: ' + asignado + '</p>'
             + '</div>';
         }).join('');
@@ -5295,7 +5350,7 @@ function renderCentroOperativo() {
         const partesJunto = t.asignadoAExterno ? [...otrosNombres, t.asignadoAExterno] : otrosNombres;
         const htmlJunto = partesJunto.length ? '<p style="font-size:0.78rem;opacity:0.7;margin:0 0 4px">Junto a: ' + partesJunto.join(', ') + '</p>' : '';
         return '<div style="margin-bottom:10px;padding:8px;border-radius:5px;border:1px solid ' + (venc ? 'var(--red)' : 'var(--border)') + '">'
-          + '<p style="font-size:0.85rem;font-weight:600;margin:0 0 4px">' + (venc ? '⚠ ' : '') + etiqueta + '</p>'
+          + '<p style="font-size:0.85rem;font-weight:600;margin:0 0 4px">' + (venc ? '⚠ ' : '') + etiqueta + (t._tipo === 'periodico' ? '' : prioridadBadgeHtml(t.prioridad)) + '</p>'
           + htmlJunto
           + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">'
           + '<input type="date" id="conf-fecha-' + t.id + '" style="font-size:0.8rem;flex:1" value="' + new Date().toISOString().split('T')[0] + '">'
@@ -5328,7 +5383,7 @@ function renderCentroOperativo() {
       const fechaRef = t._tipo === 'periodico' ? calcularProximaFecha(t) : new Date(t.fechaProgramada);
       const asignado = rol === 'admin' ? (_getAsignadosNombres(t).join(', ') || t.asignadoAExterno || 'Sin asignar') : '';
       return '<div style="margin-bottom:8px;padding:6px 8px;border-radius:5px;border:1px solid orange;background:color-mix(in srgb,orange 8%,transparent)">'
-        + '<p style="font-size:0.83rem;font-weight:600;margin:0 0 3px">🔔 ' + etiqueta + '</p>'
+        + '<p style="font-size:0.83rem;font-weight:600;margin:0 0 3px">🔔 ' + etiqueta + (t._tipo === 'periodico' ? '' : prioridadBadgeHtml(t.prioridad)) + '</p>'
         + '<p style="font-size:0.78rem;margin:0">Vence: ' + fechaRef.toLocaleDateString('es-ES') + (asignado ? ' · Asignado a: ' + asignado : '') + '</p>'
         + '</div>';
     }).join('');
