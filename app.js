@@ -712,15 +712,18 @@ function _descargarLocal(blob, nombre) {
 }
 
 async function exportarWorkOrderToExcel(workOrder) {
-  const fila = {
-    Fecha:            workOrder.fechaEjecucion || workOrder.fecha || '',
-    Equipo:           workOrder.equipo || '',
-    Descripcion:      workOrder.descripcion || '',
-    Tipo:             workOrder.tipo || 'parte',
-    Operario:         _operarioDisplay(workOrder),
-    Material:         workOrder.material || '',
-    RecambiosUsados:  (workOrder.spareParts || []).map(p => `${p.nombre}:${p.cantidad}`).join(', ')
-  };
+  const autor = _sesionAutor();
+  const fila = _normalizarFilaParte({
+    Equipo:          workOrder.equipo || '',
+    FechaInicio:     workOrder.fechaInicio || workOrder.fecha || '',
+    Averia:          workOrder.averia || '',
+    Causa:           workOrder.causa || '',
+    FechaFin:        workOrder.fechaEjecucion || workOrder.fechaFin || '',
+    Descripcion:     workOrder.descripcion || '',
+    CreadoPorUid:    autor.uid,
+    CreadoPorNombre: autor.nombre,
+    CreadoPorEmail:  autor.email
+  });
   const instActiva = localStorage.getItem('instalacionActiva') || INST();
   const path = `instalaciones/${instActiva}/partes.xlsx`;
 
@@ -733,10 +736,198 @@ async function exportarWorkOrderToExcel(workOrder) {
     rows = XLSX.utils.sheet_to_json(wbParsed.Sheets[wbParsed.SheetNames[0]]);
   }
   rows.push(fila);
+  rows = rows.map(_normalizarFilaParte);
   const encoded = await blobToBase64(crearExcelBlob(rows, 'Partes'));
   await _llamarGithubExport({ action: 'put', path, content: encoded, message: `Parte completado: ${workOrder.equipo}`, sha });
   console.log('partes.xlsx actualizado en GitHub');
 }
+
+/* ── COLA DE EXPORTACIONES PENDIENTES (outbox) ─────────────────────────────
+   Al completar un parte, su registro se guarda en Firebase en
+   instalaciones/{INST}/exportPendientes/{clave} en la MISMA escritura atómica
+   que lo quita de pendientes. Solo se borra de la cola cuando GitHub confirma
+   el guardado. Si GitHub falla, el registro queda en la cola y se reintenta. */
+let _procesandoCola = false;
+let _ultimoReintentoCola = 0;
+
+function _colaExportPath() { return `instalaciones/${INST()}/exportPendientes`; }
+
+function _claveCola(prefijo, id, extra) {
+  return (prefijo + '_' + id + (extra ? '_' + extra : '')).replace(/[.#$\[\]\/]/g, '_');
+}
+
+function _normalizarFilaParte(r) {
+  r = r || {};
+  return {
+    Equipo:          r.Equipo || '',
+    FechaInicio:     r.FechaInicio || '',
+    Averia:          r.Averia || '',
+    Causa:           r.Causa || '',
+    FechaFin:        r.FechaFin || r.Fecha || '',
+    Descripcion:     r.Descripcion || '',
+    CreadoPorUid:    r.CreadoPorUid || '',
+    CreadoPorNombre: r.CreadoPorNombre || '',
+    CreadoPorEmail:  r.CreadoPorEmail || ''
+  };
+}
+
+function _entradaColaParte(wo) {
+  const autor = _sesionAutor();
+  return {
+    clave: _claveCola('wo', wo.id),
+    entrada: {
+      instalacion: INST(),
+      archivo:     'partes',
+      hoja:        'Partes',
+      mensajeGit:  `Parte completado: ${wo.equipo || ''}`,
+      creado:      new Date().toISOString(),
+      fila: _normalizarFilaParte({
+        Equipo:          wo.equipo || '',
+        FechaInicio:     wo.fechaInicio || wo.fecha || '',
+        Averia:          wo.averia || '',
+        Causa:           wo.causa || '',
+        FechaFin:        wo.fechaEjecucion || wo.fechaFin || '',
+        Descripcion:     wo.descripcion || '',
+        CreadoPorUid:    autor.uid,
+        CreadoPorNombre: autor.nombre,
+        CreadoPorEmail:  autor.email
+      })
+    }
+  };
+}
+
+function _entradaColaMantenimiento(m, fechaProgramada, fechaEjecucion) {
+  return {
+    clave: _claveCola('mp', m.id, fechaEjecucion),
+    entrada: {
+      instalacion: INST(),
+      archivo:     'maintenance',
+      hoja:        'Mantenimientos',
+      mensajeGit:  'Add completed maintenance record',
+      creado:      new Date().toISOString(),
+      fila: {
+        FechaProgramada: fechaProgramada || '',
+        FechaEjecucion:  fechaEjecucion || '',
+        Equipo:          m.equipo || '',
+        Accion:          m.accion || '',
+        Estado:          'completado',
+        ID:              String(m.id) + '_' + fechaEjecucion
+      }
+    }
+  };
+}
+
+// Escritura atómica: actualiza la lista de pendientes Y añade el registro a la cola.
+// Devuelve true si se usó la cola. Si las reglas de Firebase no permiten la cola,
+// guarda como antes (sin cola) para no impedir completar partes.
+async function _guardarYEncolar(refPath, valor, item) {
+  const updates = {};
+  updates[refPath] = valor;
+  updates[`${_colaExportPath()}/${item.clave}`] = item.entrada;
+  try {
+    await realDb.ref().update(updates);
+    return true;
+  } catch (e) {
+    if (e && e.code === 'PERMISSION_DENIED') {
+      console.warn('Cola de exportación no permitida por las reglas de Firebase; se guarda sin cola.', e);
+      await realDb.ref(refPath).set(valor);
+      return false;
+    }
+    throw e;
+  }
+}
+
+// Sube al Excel de GitHub las filas indicadas (evita duplicados por ID y reintenta ante conflictos)
+async function _subirFilasGitHub(path, grupo) {
+  let ultimoError;
+  for (let intento = 0; intento < 3; intento++) {
+    try {
+      let sha = null;
+      let rows = [];
+      const getResult = await _llamarGithubExport({ action: 'get', path });
+      if (getResult.exists) {
+        sha = getResult.sha;
+        const raw = Uint8Array.from(atob(getResult.content.replace(/\n/g, '')), c => c.charCodeAt(0));
+        const wb  = XLSX.read(raw, { type: 'array' });
+        rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+      }
+      const idsExistentes = new Set(rows.map(r => r && r.ID).filter(Boolean).map(String));
+      const nuevas = grupo.items.map(i => i.fila).filter(f => !f.ID || !idsExistentes.has(String(f.ID)));
+      if (nuevas.length) {
+        rows.push(...nuevas);
+        if (grupo.hoja === 'Partes') rows = rows.map(_normalizarFilaParte);
+        const encoded = await blobToBase64(crearExcelBlob(rows, grupo.hoja));
+        await _llamarGithubExport({ action: 'put', path, content: encoded, message: grupo.mensajeGit, sha });
+      }
+      return;
+    } catch (e) {
+      ultimoError = e;
+      await new Promise(r => setTimeout(r, 800 * (intento + 1)));
+    }
+  }
+  throw ultimoError;
+}
+
+// Procesa la cola: exporta a GitHub y borra de la cola SOLO lo confirmado
+async function _procesarColaExportaciones() {
+  if (_procesandoCola) return { exportados: 0, pendientes: null };
+  _procesandoCola = true;
+  try {
+    const snap  = await realDb.ref(_colaExportPath()).once('value');
+    const cola  = snap.val() || {};
+    const grupos = {};
+    Object.keys(cola).forEach(k => {
+      const e = cola[k];
+      if (!e || !e.fila || !e.archivo) return;
+      const path = `instalaciones/${e.instalacion || INST()}/${e.archivo}.xlsx`;
+      if (!grupos[path]) grupos[path] = { hoja: e.hoja || 'Hoja1', mensajeGit: e.mensajeGit || 'Add record', items: [] };
+      grupos[path].items.push({ clave: k, fila: e.fila });
+    });
+    let exportados = 0;
+    for (const path of Object.keys(grupos)) {
+      const g = grupos[path];
+      try {
+        await _subirFilasGitHub(path, g);
+        const borrar = {};
+        g.items.forEach(i => { borrar[i.clave] = null; });
+        await realDb.ref(_colaExportPath()).update(borrar);
+        exportados += g.items.length;
+      } catch (err) {
+        console.warn('Exportación a GitHub pendiente (se reintentará):', path, err && err.message);
+      }
+    }
+    const resto = await realDb.ref(_colaExportPath()).once('value');
+    return { exportados, pendientes: Object.keys(resto.val() || {}).length };
+  } finally {
+    _procesandoCola = false;
+  }
+}
+
+// Reintento automático y silencioso (máx. 1 vez por minuto)
+async function _reintentarColaSilencioso() {
+  if (Date.now() - _ultimoReintentoCola < 60000) return;
+  _ultimoReintentoCola = Date.now();
+  try {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    const r = await _procesarColaExportaciones();
+    if (r.exportados > 0) console.log(`Cola de exportación: ${r.exportados} registro(s) enviados a GitHub`);
+  } catch (e) {
+    console.warn('Reintento de cola de exportación:', e && e.message);
+  }
+}
+
+// Reintento manual (se puede enlazar a un botón: onclick="reintentarExportaciones()")
+window.reintentarExportaciones = async function() {
+  try {
+    const r = await _procesarColaExportaciones();
+    if (r.pendientes === null) alert('Ya hay una exportación en curso. Inténtalo en unos segundos.');
+    else if (r.pendientes === 0) alert(r.exportados > 0 ? `Exportados ${r.exportados} registro(s) a GitHub.` : 'No hay exportaciones pendientes.');
+    else alert(`Exportados ${r.exportados}. Quedan ${r.pendientes} pendientes (sin conexión con GitHub).`);
+  } catch (e) {
+    alert('No se pudo procesar la cola de exportaciones: ' + e.message);
+  }
+};
+window.addEventListener('online', _reintentarColaSilencioso);
 
 // --- Exportadores por tipo de informe ---
 
@@ -906,19 +1097,75 @@ function _crearPopup(titulo) {
   const existing = document.querySelector('.notification-popup');
   if (existing) existing.remove();
 
+  // .notification-popup es la capa (fondo oscuro); .np-dialog es la ventana
   const popup = document.createElement('div');
   popup.className = 'notification-popup';
+  popup.dataset.popup = titulo; // identifica qué popup es, para que solo lo cierre quien le corresponde
+  popup.setAttribute('role', 'dialog');
+  popup.setAttribute('aria-modal', 'true');
+  popup.setAttribute('aria-label', titulo);
   popup.innerHTML = `
-    <h3>${titulo}</h3>
-    <div id="popupContent"></div>
-    <button class="button" onclick="closePopup(this)">Cerrar</button>
+    <div class="np-dialog">
+      <div class="np-header">
+        <h3>${titulo}</h3>
+        <span class="np-count" id="popupCount" style="display:none"></span>
+        <button type="button" class="np-close" aria-label="Cerrar" onclick="closePopup(this)">&times;</button>
+      </div>
+      <div id="popupContent" class="np-body"></div>
+    </div>
   `;
   document.body.appendChild(popup);
-  popup.style.display = 'block';
-  popup.addEventListener('click', e => { if (e.target === popup) popup.remove(); });
-  return popup.querySelector('#popupContent');
+  popup.style.display = 'flex';
+
+  // Si se está editando un parte, no se cierra por accidente al pulsar fuera o con Escape
+  popup.addEventListener('input', e => {
+    if (e.target.closest && e.target.closest('.work-order-edit-form, .edit-form')) popup.dataset.sucio = '1';
+  });
+  // Pulsar el fondo oscuro cierra la ventana (salvo que haya cambios sin guardar)
+  popup.addEventListener('click', e => {
+    if (e.target === popup && popup.dataset.sucio !== '1') popup.remove();
+  });
+
+  // Contador de registros visibles en la cabecera
+  const body  = popup.querySelector('#popupContent');
+  const count = popup.querySelector('#popupCount');
+  const actualizarContador = () => {
+    const n = body.querySelectorAll('.pending-record').length;
+    count.textContent = n ? String(n) : '';
+    count.style.display = n ? '' : 'none';
+  };
+  new MutationObserver(actualizarContador).observe(body, { childList: true, subtree: true });
+
+  return body;
 }
 
+// Escape cierra la ventana abierta (salvo que haya cambios sin guardar)
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const p = document.querySelector('.notification-popup');
+  if (p && p.dataset.sucio !== '1') p.remove();
+});
+
+
+// Cierra el popup abierto SOLO si es uno de los indicados (evita cerrar popups ajenos)
+function _cerrarPopupSiEs(...titulos) {
+  const p = document.querySelector('.notification-popup');
+  if (p && titulos.includes(p.dataset.popup)) p.remove();
+}
+
+// Vuelve a pintar una lista de pendientes conservando los filtros elegidos y la posición de desplazamiento
+function _conservarVista(refrescar) {
+  const p = document.querySelector('.notification-popup');
+  const cuerpo = p && (p.querySelector('.np-body') || p);
+  const scroll = cuerpo ? cuerpo.scrollTop : 0;
+  const filtros = p ? [...p.querySelectorAll('.pending-filter-bar select')].map(s => [s.id, s.value]) : [];
+  refrescar();
+  const p2 = document.querySelector('.notification-popup'); if (!p2) return;
+  let cambiado = false;
+  filtros.forEach(([id, v]) => { const s = id && p2.querySelector('#' + id); if (s && s.value !== v && [...s.options].some(o => o.value === v)) { s.value = v; cambiado = true; } });
+  if (cambiado) { const s = p2.querySelector('.pending-filter-bar select'); if (s) s.dispatchEvent(new Event('change')); }
+  const c2 = p2.querySelector('.np-body') || p2; c2.scrollTop = scroll;
+}
 
 function closePopup(buttonElement) {
   const popup = buttonElement.closest('.notification-popup');
@@ -1104,8 +1351,7 @@ function updateNotificationIcons() {
   _setIconEstado(document.getElementById('tareasProgramadasIcon'), tieneTareasProg);
 
   if (!tienePreventivos && !tieneTareasProg) {
-    const popup = document.querySelector('.notification-popup');
-    if (popup) popup.remove();
+    _cerrarPopupSiEs('Mantenimientos Pendientes', 'Preventivos de Equipos', 'Trabajos Periódicos');
   }
 
   const tieneAverias = (db.workOrdersAverias || []).some(o => o && (!o.estado || o.estado === 'pendiente' || o.estado === 'en_curso'));
@@ -1250,19 +1496,13 @@ function checkPendingWorkOrders() {
 function checkPendingAverias() {
   const tiene = (db.workOrdersAverias || []).some(o => o && (!o.estado || o.estado === 'pendiente' || o.estado === 'en_curso'));
   _setIconEstado(document.getElementById('workOrderIconAverias'), tiene);
-  if (!tiene) {
-    const popup = document.querySelector('.notification-popup');
-    if (popup) popup.remove();
-  }
+  if (!tiene) _cerrarPopupSiEs('Partes de Avería Pendientes');
 }
 
 function checkPendingTareas() {
   const tiene = (db.workOrdersTareas || []).some(o => o && (!o.estado || o.estado === 'pendiente' || o.estado === 'en_curso'));
   _setIconEstado(document.getElementById('workOrderIconTareas'), tiene);
-  if (!tiene) {
-    const popup = document.querySelector('.notification-popup');
-    if (popup) popup.remove();
-  }
+  if (!tiene) _cerrarPopupSiEs('Tareas Operativas Pendientes');
 }
 
 let _pendAveriasCache = [];
@@ -1498,9 +1738,10 @@ async function showScreen(screenId) {
     const list = document.getElementById('workOrdersList');
     if (list) list.style.display = 'none';
   }
-  if (screenId === 'equiposScreen')   actualizarListaEquipos();
+  if (screenId === 'equiposScreen')   actualizarListaEquipos(true);
+  if (screenId === 'cuadranteScreen') cuadranteAbrir();
   if (screenId !== 'mainScreen' && screenId !== 'menuScreen') updateSelectors();
-  if (screenId === 'menuScreen')      { checkPendingWorkOrders(); _mostrarUsuarioEnMenu(); checkPastDueMaintenances(); updateNotificationIcons(); }
+  if (screenId === 'menuScreen')      { checkPendingWorkOrders(); _mostrarUsuarioEnMenu(); checkPastDueMaintenances(); updateNotificationIcons(); _reintentarColaSilencioso(); if (typeof _cqAvisoMenu === 'function') _cqAvisoMenu(); }
   if (screenId === 'mainScreen')      { 
     const cerrarBtn = document.getElementById('cerrarSesionBtn');
     const adminBtn = document.getElementById('adminBtn');
@@ -1722,7 +1963,7 @@ async function actualizarListaMantenimientos() {
     .forEach(m => crearCardMantenimiento(m, bodyTar));
 }
 
-async function actualizarListaEquipos() {
+async function actualizarListaEquipos(reiniciar) {
   const listaDiv = document.getElementById('listaEquiposGuardados');
   if (!listaDiv) return;
 
@@ -1732,8 +1973,18 @@ async function actualizarListaEquipos() {
   }
 
   // Estado de navegación local (persiste entre llamadas via closure en el propio DOM)
-  _equiposNav = { paso: 'familia', familia: null, zona: null };
+  // Por defecto se mantiene el nivel actual (familia/zona) y las fichas abiertas; solo se reinicia al entrar en la pantalla
+  const abiertos = reiniciar ? [] : [...listaDiv.querySelectorAll('.equipo-record')].map(r => {
+    const f = r.querySelector('.edit-form');
+    return { idx: r.dataset.equipoIndex, detalle: !!r.querySelector('.eq-detail-open'), edicion: !!f && getComputedStyle(f).display !== 'none' };
+  });
+  if (reiniciar) _equiposNav = { paso: 'familia', familia: null, zona: null };
   _renderEquiposNav(listaDiv);
+  abiertos.forEach(a => {
+    const r = listaDiv.querySelector(`.equipo-record[data-equipo-index="${a.idx}"]`); if (!r) return;
+    if (a.detalle) { const d = r.querySelector('.eq-detail'); if (d) d.classList.add('eq-detail-open'); }
+    if (a.edicion) { const f = r.querySelector('.edit-form'); if (f) f.style.display = 'block'; }
+  });
 }
 
 // Objeto de estado de navegación para la pantalla Equipos
@@ -1916,11 +2167,18 @@ window._equiposNavIr = function(paso, familia, zona) {
 window._renderEquiposNav = _renderEquiposNav;
 
 // Devuelve HTML con los mantenimientos periódicos del equipo (tipo preventivo)
+function _normalizarNombreEquipo(s) {
+  return (s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // quita tildes
+    .trim().replace(/\s+/g, ' ')                         // colapsa espacios
+    .toLowerCase();
+}
+
 function _renderMantsFicha(nombreEquipo) {
   if (!nombreEquipo) return '<p style="color:var(--text-muted);font-size:0.82rem">—</p>';
+  const clave = _normalizarNombreEquipo(nombreEquipo);
   const mants = (db.mantenimientosPeriodicos || []).filter(m =>
-    m &&
-    (m.equipo || '').trim().toLowerCase() === nombreEquipo.trim().toLowerCase()
+    m && _normalizarNombreEquipo(m.equipo) === clave
   );
   if (!mants.length) return '<p style="color:var(--text-muted);font-size:0.82rem">No hay mantenimientos programados para este equipo</p>';
   return mants.slice().sort((a, b) => (a.periodicidad || 0) - (b.periodicidad || 0)).map(m => {
@@ -2198,7 +2456,7 @@ async function saveWorkOrderChanges(orderId) {
     await realDb.ref(ref).set(arr);
     localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
     _hideEditForm(`edit-form-${orderId}`);
-    show();
+    _conservarVista(show);
     alert('Cambios guardados con éxito');
   } catch (error) {
     console.error('Error saving work order changes:', error);
@@ -2214,7 +2472,7 @@ async function updateWorkOrderOperator(orderId, newOperator) {
   try {
     await realDb.ref(ref).set(arr);
     localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
-    show();
+    _conservarVista(show);
   } catch (error) {
     console.error('Error updating work order operator:', error);
     alert('Error al actualizar el operario');
@@ -2309,7 +2567,9 @@ async function completeWorkOrder(orderId, buttonElement) {
     const updatedArr = ref.includes('Averias') ? db.workOrdersAverias
                      : ref.includes('Tareas')  ? db.workOrdersTareas
                      :                           db.workOrders;
-    await realDb.ref(ref).set(updatedArr.length ? updatedArr : []);
+    // Escritura atómica: quita de pendientes Y deja el registro en la cola de exportación
+    const colaItem = _entradaColaParte(completedOrder);
+    const colaOk   = await _guardarYEncolar(ref, updatedArr.length ? updatedArr : null, colaItem);
 
     // ── STEP 3: Persist to localStorage ──────────────────────────────────────
     localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
@@ -2334,13 +2594,19 @@ async function completeWorkOrder(orderId, buttonElement) {
       tipo:        completedOrder.tipo || 'parte'
     });
 
-    // ── STEP 6: Export to GitHub (non-blocking) ───────────────────────────────
+    // ── STEP 6: Export to GitHub (desde la cola; si falla, queda pendiente) ───
     try {
-      await exportarWorkOrderToExcel(completedOrder);
-      alert('Parte completado y exportado a GitHub correctamente');
+      if (colaOk) {
+        const r = await _procesarColaExportaciones();
+        if (r.pendientes === 0) alert('Parte completado y exportado a GitHub correctamente');
+        else alert('Parte completado. No se pudo exportar a GitHub ahora: queda guardado y se reintentará automáticamente.');
+      } else {
+        await exportarWorkOrderToExcel(completedOrder);
+        alert('Parte completado y exportado a GitHub correctamente');
+      }
     } catch (ghError) {
       console.error('GitHub export error:', ghError.message);
-      alert('Parte completado. Error al exportar a GitHub: ' + ghError.message);
+      alert('Parte completado. Error al exportar a GitHub: ' + ghError.message + (colaOk ? ' (queda pendiente y se reintentará)' : ''));
     }
 
   } catch (error) {
@@ -2405,7 +2671,7 @@ async function _cargarOperariosCheckboxes(containerId, uidsActuales) {
     const btnQuitar = items.length
       ? '<button type="button" class="asig-checkbox-clear" onclick="this.parentElement.querySelectorAll(\'input[type=checkbox]\').forEach(c=>c.checked=false);this.parentElement.querySelectorAll(\'label\').forEach(l=>l.classList.remove(\'seleccionado\'))">🗑 Sin asignar (quitar todos)</button>'
       : '';
-    el.innerHTML = btnQuitar + filas;
+    el.innerHTML = btnQuitar + (items.length && typeof cuadranteAsignarTarde === 'function' ? '<button type="button" class="asig-checkbox-clear" onclick="cuadranteAsignarTarde(this)">🌙 De tarde</button>' : '') + filas;
     el.querySelectorAll('input[type="checkbox"]').forEach(chk => {
       chk.addEventListener('change', () => chk.closest('label').classList.toggle('seleccionado', chk.checked));
     });
@@ -2469,8 +2735,8 @@ async function agregarMantenimientoPeriodico() {
     if (_origenAltaMantenimiento && _origenAltaMantenimiento.desde === 'equipos') {
       const origen = _origenAltaMantenimiento;
       _origenAltaMantenimiento = null;
-      _equiposNav = { paso: 'equipo', familia: origen.familia, zona: origen.zona };
       showScreen('equiposScreen');
+      _equiposNav = { paso: 'equipo', zona: origen.zona, familia: origen.familia };
       actualizarListaEquipos();
       setTimeout(() => {
         const cards = document.querySelectorAll('.equipo-record');
@@ -2867,7 +3133,7 @@ async function updateMaintenanceOperator(maintenanceId, newOperator) {
     m.operario = newOperator;
     await realDb.ref(`instalaciones/${INST()}/mantenimientosPeriodicos`).set(db.mantenimientosPeriodicos);
     localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
-    showPendingMaintenances();
+    _conservarVista(showPendingMaintenances);
   } catch (error) {
     console.error('Error updating maintenance operator:', error);
     alert('Error al actualizar el operario');
@@ -2920,8 +3186,12 @@ async function completeMaintenance(id, buttonElement) {
     m.fechaUltimaEjecucion = fechaEjecucion;
     m.fecha = fechaEjecucion;
 
-    // Firebase + localStorage primero (crítico)
-    await realDb.ref(`instalaciones/${INST()}/mantenimientosPeriodicos`).set(db.mantenimientosPeriodicos);
+    // Firebase + localStorage primero (crítico), junto con la cola de exportación (atómico)
+    const colaOk = await _guardarYEncolar(
+      `instalaciones/${INST()}/mantenimientosPeriodicos`,
+      db.mantenimientosPeriodicos,
+      _entradaColaMantenimiento(m, fechaProgramada, fechaEjecucion)
+    );
     await saveToLocalStorage();
     checkPastDueMaintenances();
     updateNotificationIcons();
@@ -2942,15 +3212,21 @@ async function completeMaintenance(id, buttonElement) {
       tipo:        'mantenimiento'
     });
 
-    // GitHub export — no bloqueante, no revierte lo anterior si falla
+    // GitHub export — desde la cola; si falla, queda pendiente y se reintenta
     try {
-      await _exportarInformeGitHub(
-        { FechaProgramada: fechaProgramada, FechaEjecucion: fechaEjecucion,
-          Equipo: m.equipo, Accion: m.accion, Estado: 'completado' },
-        'Mantenimientos', 'maintenance',
-        'Add completed maintenance record',
-        'Mantenimiento completado y exportado a GitHub correctamente'
-      );
+      if (colaOk) {
+        const r = await _procesarColaExportaciones();
+        if (r.pendientes === 0) alert('Mantenimiento completado y exportado a GitHub correctamente');
+        else alert('Mantenimiento completado. No se pudo exportar a GitHub ahora: queda guardado y se reintentará automáticamente.');
+      } else {
+        await _exportarInformeGitHub(
+          { FechaProgramada: fechaProgramada, FechaEjecucion: fechaEjecucion,
+            Equipo: m.equipo, Accion: m.accion, Estado: 'completado' },
+          'Mantenimientos', 'maintenance',
+          'Add completed maintenance record',
+          'Mantenimiento completado y exportado a GitHub correctamente'
+        );
+      }
     } catch (ghError) {
       console.error('GitHub export error (no bloqueante):', ghError);
       alert('Mantenimiento completado. No se pudo exportar a GitHub: ' + ghError.message);
@@ -3125,7 +3401,8 @@ async function guardarEdicionEquipo(index) {
 
   try {
     const equipos = [...window.equiposDb.equiposGuardados];
-    equipos[index] = { familia, zona, equipo, modelo, recambios };
+    equipos[index] = { familia: familia, zona: zona, equipo, modelo, recambios };
+    _equiposNav = { paso: 'equipo', familia: familia, zona: zona }; // sigue al equipo aunque cambie de familia o zona
     window.equiposDb.equiposGuardados = equipos;
     await realDb.ref(`instalaciones/${INST()}/stock`).set(equipos);
     await realDb.ref(`instalaciones/${INST()}/stock`).set(equipos);
@@ -4191,7 +4468,7 @@ async function _obtenerAvisosVencidosUsuario() {
       [...tareas, ...averias].forEach(t => {
         const abierto = !t.estado || t.estado === 'pendiente' || t.estado === 'en_curso';
         if (abierto && _getAsignadosUids(t).includes(uid) && t.fechaProgramada && new Date(t.fechaProgramada) < ahora) {
-          avisos.push({ titulo: prioridadBadgeHtml(t.prioridad) + ' ' + [t.equipo, t.accion || t.descripcion].filter(Boolean).join(' — '), instalacion: nombreInst, tipo: t.tipo === 'averia' ? 'averia' : 'tarea', prioridad: prioridadKey(t.prioridad) });
+          avisos.push({ titulo: [t.equipo, t.accion || t.descripcion].filter(Boolean).join(' — '), instalacion: nombreInst, tipo: t.tipo === 'averia' ? 'averia' : 'tarea', prioridad: prioridadKey(t.prioridad) });
         }
       });
     }));
@@ -4536,7 +4813,7 @@ function _registrarListenersFirebase() {
     checkPendingWorkOrders();
     updateNotificationIcons();
     const popup = document.querySelector('.notification-popup');
-    if (popup && popup.querySelector('#popupContent')) {
+    if (popup && popup.dataset.popup === 'Partes de Trabajo Pendientes') {
       if (!db.workOrders.some(wo => wo && wo.estado === 'pendiente')) popup.remove();
       else showPendingWorkOrders();
     }
@@ -4596,7 +4873,7 @@ function _registrarListenersFirebase() {
   // stock
   realDb.ref(`instalaciones/${INST()}/stock`).on('value', (snapshot) => {
     _aplicarStockFirebase(snapshot.val());
-    actualizarListaEquipos();
+    if (![...document.querySelectorAll('#listaEquiposGuardados .edit-form')].some(f => getComputedStyle(f).display !== 'none')) actualizarListaEquipos();
     actualizarDatalistEquipos();
   }, (error) => {
     if (error.code === 'PERMISSION_DENIED') {
@@ -4712,12 +4989,18 @@ async function finalizarParte(id) {
       });
     } catch(e) { console.warn('historial finalizarParte error:', e); }
   }
-  // Exportar a GitHub al finalizar (mismo flujo que completeWorkOrder)
+  // Exportar a GitHub al finalizar (con cola: si falla, queda pendiente y se reintenta)
   try {
-    await exportarWorkOrderToExcel({ ...parte });
-    console.log('Parte finalizado y exportado a GitHub');
+    const colaItem = _entradaColaParte({ ...parte });
+    await realDb.ref(`${_colaExportPath()}/${colaItem.clave}`).set(colaItem.entrada);
+    await _procesarColaExportaciones();
   } catch (e) {
-    console.warn('finalizarParte export error:', e);
+    console.warn('finalizarParte cola error, se exporta directamente:', e);
+    try {
+      await exportarWorkOrderToExcel({ ...parte });
+    } catch (e2) {
+      console.warn('finalizarParte export error:', e2);
+    }
   }
 }
 
@@ -5673,3 +5956,872 @@ function exportarPlanificacionXLSX() {
   URL.revokeObjectURL(url);
 }
 window.exportarPlanificacionXLSX = exportarPlanificacionXLSX;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CUADRANTE LABORAL — turnos, fines de semana, festivos, puentes y horas
+   · Motor (lógica pura): cuadranteGenerar / cuadranteProponerFestivos / cuadranteHoras
+   · Pantalla propia (se monta sola; no depende de index.html ni styles.css)
+   · Datos en Firebase a nivel de equipo:  cuadrante/config · cuadrante/indice · cuadrante/anios/{año}
+   ═══════════════════════════════════════════════════════════════════════════ */
+/* ═══════════ MOTOR DEL CUADRANTE (lógica pura, sin dependencias) ═══════════
+   Genera la rejilla anual de turnos. Reglas:
+   - Tarde: ciclo semanal (lunes-viernes) entre los PUESTOS de tarde.
+   - Fin de semana: ciclo semanal (sábado+domingo) entre los PUESTOS de fin de semana.
+   - Festivos nacionales/autonómicos: libres para todos salvo quien los trabaja (FT).
+   - Festivos locales: FL para cada operario en sus fechas.
+   El ciclo avanza por PUESTO (no por persona): si cambia la plantilla, se cambia
+   quién ocupa el puesto sin romper la rotación. */
+const CQ_MS = 86400000;
+function cqIso(d) { return d.toISOString().slice(0, 10); }
+function cqDate(s) { const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)); }
+function cqLunes(d) { const x = new Date(d.getTime()); const wd = (x.getUTCDay() + 6) % 7; return new Date(x.getTime() - wd * CQ_MS); }
+
+function cuadranteGenerar(cfg) {
+  const { year, operarios, puestosFin, posFin0, puestosTarde, posTarde0 } = cfg;
+  const festivos = new Set(cfg.festivos || []);
+  const trabajados = cfg.festivosTrabajados || {};   // { 'YYYY-MM-DD': [ids] }
+  const excl = cfg.excluidos || {};
+  const locales = cfg.locales || {};                 // { id: ['YYYY-MM-DD', ...] }
+  const manual = cfg.manual || {};                   // { id: { 'YYYY-MM-DD': 'COD' } }  correcciones
+  const grid = {}; operarios.forEach(id => { grid[id] = {}; });
+
+  const ini = new Date(Date.UTC(year, 0, 1)), fin = new Date(Date.UTC(year, 11, 31));
+  const lunes0 = cqLunes(ini);
+  let sabados = 0;                                   // sábados transcurridos en el año
+  for (let t = ini.getTime(); t <= fin.getTime(); t += CQ_MS) {
+    const d = new Date(t), iso = cqIso(d), wd = (d.getUTCDay() + 6) % 7;  // 0=lun … 6=dom
+    const semana = Math.round((cqLunes(d).getTime() - lunes0.getTime()) / (7 * CQ_MS));
+    const tarde = puestosTarde[(posTarde0 + semana) % puestosTarde.length];
+    let finde = null;
+    if (wd === 5) finde = puestosFin[(posFin0 + sabados) % puestosFin.length];
+    if (wd === 6) finde = puestosFin[(posFin0 + sabados - 1 + puestosFin.length * 2) % puestosFin.length];
+    const esFestivoGen = festivos.has(iso);
+    operarios.forEach(id => {
+      let c; const esFestivo = esFestivoGen && !(excl[id] || []).includes(iso);
+      if (wd <= 4) {
+        if (esFestivo) c = (trabajados[iso] || []).includes(id) ? 'FT' : 'L';
+        else c = id === tarde ? 'T' : 'M';
+      } else {
+        if (id === finde) c = esFestivo ? 'FT' : (wd === 5 ? 'FS' : 'FD'); else c = 'L';
+      }
+      if ((locales[id] || []).includes(iso)) c = 'FL';
+      if (manual[id] && manual[id][iso]) c = manual[id][iso];
+      grid[id][iso] = c;
+    });
+    if (wd === 5) sabados++;
+  }
+  // Estado para continuar el año siguiente
+  const lunesSig = cqLunes(new Date(Date.UTC(year + 1, 0, 1)));
+  const semSig = Math.round((lunesSig.getTime() - lunes0.getTime()) / (7 * CQ_MS));
+  const posTardeSig = (posTarde0 + semSig) % puestosTarde.length;
+  // primer sábado del año siguiente: si 1-ene es sábado, ese día; si no, el próximo
+  const posFinSig = (posFin0 + sabados) % puestosFin.length;
+  return { grid, estado: { posFin: posFinSig, posTarde: posTardeSig } };
+}
+
+// Horas anuales según los valores del convenio (como la hoja de cálculo)
+function cuadranteHoras(gridOperario, p) {
+  // p: { horasDia, horasSabado, horasDomingo, horasFT, horasFL, diasVacaciones }
+  const cnt = {}; Object.values(gridOperario).forEach(c => { cnt[c] = (cnt[c] || 0) + 1; });
+  const M = cnt.M || 0, T = cnt.T || 0;
+  const h = {
+    M: (M - p.diasVacaciones) * p.horasDia, T: T * p.horasDia,
+    FS: (cnt.FS || 0) * p.horasSabado, FD: (cnt.FD || 0) * p.horasDomingo,
+    FT: (cnt.FT || 0) * p.horasFT, FL: (cnt.FL || 0) * p.horasFL
+  };
+  h.total = Object.values(h).reduce((a, b) => a + b, 0);
+  return { cnt, h };
+}
+
+/* ═══════════ PROPUESTA DE REPARTO DE FESTIVOS Y PUENTES ═══════════
+   Puente = bloque de 2+ festivos nacionales seguidos (Semana Santa, 7-8 dic…) y Navidad (25 dic).
+   - Navidad: la trabaja quien tiene el fin de semana contiguo (como en 2025 y 2026).
+   - Bloques: los hace UNA persona entera; se elige entre quienes aún no han hecho puente en el ciclo actual.
+   - Resto de festivos entre semana: a quien lleve menos días de festivo trabajados.
+   - Los festivos que caen en sábado/domingo los trabaja quien tiene ese fin de semana (ya viene en la rejilla).
+   estado.puentesCiclo = ids que ya hicieron puente en el ciclo vigente; se reinicia al completarse. */
+function cuadranteProponerFestivos(cfg) {
+  const { year, operarios, festivos, grid } = cfg;
+  const excl = cfg.excluidos || {};
+  const aplica = (id, fs) => fs.every(f => !(excl[id] || []).includes(f));
+  const cubierto = f => operarios.some(id => (excl[id] || []).includes(f));
+  const puentesCiclo = new Set((cfg.estado && cfg.estado.puentesCiclo) || []);
+  const dias = {}; operarios.forEach(id => { dias[id] = Object.values(grid[id]).filter(c => c === 'FT').length; });
+  const trabajados = {}, puentes = [];
+  const fest = [...festivos].sort();
+  const wdOf = iso => (cqDate(iso).getUTCDay() + 6) % 7;
+  const porOrden = ids => ids.slice().sort((a, b) => dias[a] - dias[b] || operarios.indexOf(a) - operarios.indexOf(b));
+  const dar = (id, fechas, tipo) => { fechas.forEach(f => { (trabajados[f] = trabajados[f] || []).push(id); }); dias[id] += fechas.length; if (tipo) { puentesCiclo.add(id); puentes.push({ fechas, id, tipo }); } };
+  const elegirPuente = (fs) => { const ok = operarios.filter(id => aplica(id, fs)); let c = ok.filter(id => !puentesCiclo.has(id)); if (!c.length) { puentesCiclo.clear(); c = ok; } if (!c.length) c = operarios.slice(); return porOrden(c)[0]; };
+
+  const entreSemana = fest.filter(f => wdOf(f) <= 4);
+  // 1) Navidad: quien tiene el fin de semana contiguo
+  const nav = `${year}-12-25`;
+  const usados = new Set(entreSemana.filter(cubierto));
+  if (entreSemana.includes(nav) && !usados.has(nav)) {
+    const wd = wdOf(nav), sab = new Date(cqDate(nav).getTime() + (5 - wd) * CQ_MS), isoS = cqIso(sab);
+    const delFinde = operarios.find(o => grid[o][isoS] === 'FS');
+    // Si quien tiene el fin de semana contiguo aún no ha hecho puente en este ciclo, se queda con Navidad;
+    // si ya lo hizo, pasa al siguiente pendiente (así no se repite puente antes de completar el ciclo).
+    const id = (delFinde && !puentesCiclo.has(delFinde) && aplica(delFinde, [nav])) ? delFinde : elegirPuente([nav]);
+    dar(id, [nav], 'navidad'); usados.add(nav);
+  }
+  // 2) Bloques de festivos seguidos
+  const bloques = []; let act = [];
+  entreSemana.forEach(f => { if (usados.has(f)) return; if (act.length && (cqDate(f) - cqDate(act[act.length - 1])) === CQ_MS) act.push(f); else { if (act.length) bloques.push(act); act = [f]; } });
+  if (act.length) bloques.push(act);
+  bloques.filter(b => b.length >= 2).forEach(b => { dar(elegirPuente(b), b, 'bloque'); b.forEach(f => usados.add(f)); });
+  // 3) Festivos sueltos entre semana: reparto equilibrado
+  entreSemana.filter(f => !usados.has(f)).forEach(f => { const cand = operarios.filter(id => aplica(id, [f])); dar(porOrden(cand.length ? cand : operarios)[0], [f], null); });
+  return { festivosTrabajados: trabajados, puentes, estado: { puentesCiclo: [...puentesCiclo] }, diasPorOperario: dias };
+}
+
+
+const CQ_BASE   = 'cuadrante';
+const CQ_MESES  = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+const CQ_DIASEM = ['L','M','X','J','V','S','D'];
+const CQ_CODIGOS = { M:'Mañana', T:'Tarde', L:'Libre', FS:'Sábado', FD:'Domingo', FT:'Festivo trabajado', FL:'Festivo local' };
+const CQ_HORAS_DEF = { horasDia:7.25, horasSabado:5, horasDomingo:5, horasFT:5, horasFL:0, diasVacaciones:23, convenio:1720 };
+const CQ_HORAS_ETQ = { horasDia:'Horas día L-V (mañana/tarde)', horasSabado:'Horas sábado', horasDomingo:'Horas domingo', horasFT:'Horas festivo trabajado', horasFL:'Horas festivo local', diasVacaciones:'Días de vacaciones a descontar', convenio:'Horas del convenio' };
+let _cq = { usuarios: [], cacheMenu: null, config: null, indice: [], pub: {}, docs: {}, anio: null, mes: 0, filtro: '', borrador: null, cfgEdit: null, festivosEdit: [], excl: {}, tab: 'consulta', montado: false };
+
+function _cqEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c])); }
+function _cqEsAdmin() { return localStorage.getItem('usuarioRol') === 'admin'; }
+function _cqSlug(n) { return String(n).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || ('op' + Date.now()); }
+function _cqRef(sub) { return realDb.ref(CQ_BASE + (sub ? '/' + sub : '')); }
+function _cqAnioBisiesto(y) { return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0; }
+function _cqPascua(y) {
+  const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const mes = Math.floor((h + l - 7 * m + 114) / 31), dia = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(Date.UTC(y, mes - 1, dia));
+}
+function _cqMsg(texto, ok) {
+  const el = document.getElementById('cqMensaje'); if (!el) return;
+  el.textContent = texto || ''; el.className = 'cq-mensaje' + (texto ? (ok ? ' cq-ok' : ' cq-error') : '');
+}
+function _cqErrorLegible(e) {
+  if (e && e.code === 'PERMISSION_DENIED') return 'Firebase no permite acceder a «cuadrante». En las reglas de Realtime Database añade: "cuadrante": { ".read": "auth != null", ".write": "auth != null" }';
+  return (e && e.message) || String(e);
+}
+
+/* ── Datos de arranque (deducidos de tus cuadrantes 2025 y 2026) ── */
+function _cqConfigSemilla2026() {
+  const nombres = ['Soto', 'Juanma/Alex', 'Alejandro N', 'Alejandro PL', 'Chema', 'Fran'];
+  const id = n => _cqSlug(n);
+  return {
+    operarios: nombres.map(n => ({ id: id(n), nombre: n, uid: '' })),
+    puestosFin: nombres.map(id),
+    puestosTarde: ['Fran', 'Soto', 'Juanma/Alex', 'Chema'].map(id),
+    horas: { ...CQ_HORAS_DEF },
+    semilla: { desdeAnio: 2027, finId: id('Chema'), tardeId: id('Chema'), puentesCiclo: ['Soto', 'Fran', 'Alejandro PL'].map(id) }
+  };
+}
+function _cqConfigVacia() { return { operarios: [], puestosFin: [], puestosTarde: [], horas: { ...CQ_HORAS_DEF }, semilla: null }; }
+function _cqNormalizarConfig(c) {
+  const s = c.semilla || null;
+  return { operarios: c.operarios || [], puestosFin: c.puestosFin || [], puestosTarde: c.puestosTarde || [],
+           horas: { ...CQ_HORAS_DEF, ...(c.horas || {}) },
+           semilla: s ? { desdeAnio: s.desdeAnio, finId: s.finId, tardeId: s.tardeId, puentesCiclo: s.puentesCiclo || [] } : null };
+}
+function _cqNormalizarDoc(d) {
+  const est = e => ({ ...(e || {}), puentesCiclo: (e && e.puentesCiclo) || [] });
+  return { ...d, festivos: d.festivos || [], locales: d.locales || {}, excluidos: d.excluidos || {}, dias: d.dias || {}, puentes: d.puentes || [], operarios: d.operarios || [],
+           puestosFin: d.puestosFin || [], puestosTarde: d.puestosTarde || [], horas: { ...CQ_HORAS_DEF, ...(d.horas || {}) },
+           estadoInicial: est(d.estadoInicial), estadoFinal: est(d.estadoFinal) };
+}
+
+/* ── Usuarios de la app (para vincular cada operario con su cuenta) ── */
+async function _cqCargarUsuarios() {
+  try {
+    const s = await realDb.ref('usuarios').once('value'), u = s.val() || {};
+    _cq.usuarios = Object.entries(u).filter(([, x]) => x && x.estado === 'activo').map(([uid, x]) => ({ uid, nombre: x.nombre || x.email || uid })).sort((a, b) => a.nombre.localeCompare(b.nombre));
+  } catch (e) { _cq.usuarios = []; }
+}
+
+/* ── Carga de datos ── */
+async function _cqCargar() {
+  const [c, i] = await Promise.all([_cqRef('config').once('value'), _cqRef('indice').once('value')]);
+  _cq.config = c.val() ? _cqNormalizarConfig(c.val()) : _cqConfigVacia();
+  const iv = i.val() || {}; _cq.pub = iv;
+  _cq.indice = Object.keys(iv).filter(k => _cqEsAdmin() || iv[k] === true).map(Number).sort((a, b) => a - b);
+}
+async function _cqCargarAnio(y) {
+  if (_cq.docs[y]) return _cq.docs[y];
+  const s = await _cqRef('anios/' + y).once('value');
+  const d = s.val(); if (!d) return null;
+  _cq.docs[y] = _cqNormalizarDoc(d); return _cq.docs[y];
+}
+
+/* ── Conversión rejilla ⇄ arrays por día (formato compacto en Firebase) ── */
+function _cqFechaDeIndice(y, i) { return cqIso(new Date(Date.UTC(y, 0, 1 + i))); }
+function _cqDiasDeGrid(grid, y, ids) {
+  const n = _cqAnioBisiesto(y) ? 366 : 365, out = {};
+  ids.forEach(id => { out[id] = Array.from({ length: n }, (_, i) => grid[id][_cqFechaDeIndice(y, i)] || 'L'); });
+  return out;
+}
+function _cqCodigo(doc, id, iso) {
+  const arr = doc.dias[id]; if (!arr) return '';
+  const i = Math.round((cqDate(iso).getTime() - Date.UTC(doc.year, 0, 1)) / CQ_MS);
+  return arr[i] || '';
+}
+
+/* ── Festivos: propuesta automática (solo días entre semana; el resto se revisa a mano) ── */
+function _cqProponerFestivosAnio(y) {
+  const p = _cqPascua(y), mover = n => cqIso(new Date(p.getTime() + n * CQ_MS));
+  const cand = [[`${y}-01-01`, 'Año Nuevo'], [`${y}-01-06`, 'Epifanía del Señor'], [`${y}-03-19`, 'San José'], [mover(-3), 'Jueves Santo'], [mover(-2), 'Viernes Santo'],
+    [`${y}-05-01`, 'Fiesta del Trabajo'], [`${y}-06-09`, 'Día de la Región de Murcia'], [`${y}-08-15`, 'Asunción de la Virgen'], [`${y}-10-12`, 'Fiesta Nacional de España'],
+    [`${y}-11-01`, 'Todos los Santos'], [`${y}-12-06`, 'Día de la Constitución'], [`${y}-12-08`, 'Inmaculada Concepción'], [`${y}-12-25`, 'Navidad']];
+  const lista = [], fuera = [];
+  cand.sort((a, b) => a[0].localeCompare(b[0])).forEach(([fecha, nombre]) => {
+    const wd = (cqDate(fecha).getUTCDay() + 6) % 7;
+    if (wd <= 4) lista.push({ fecha, nombre }); else fuera.push({ fecha, nombre, dia: wd === 5 ? 'sábado' : 'domingo' });
+  });
+  return { lista, fuera };
+}
+
+/* ── Estado de arranque del año a generar ── */
+async function _cqEstadoInicial(year) {
+  const cfg = _cq.config;
+  const prev = await _cqCargarAnio(year - 1);
+  if (prev && prev.estadoFinal && prev.estadoFinal.finId) {
+    const posFin = cfg.puestosFin.indexOf(prev.estadoFinal.finId), posTarde = cfg.puestosTarde.indexOf(prev.estadoFinal.tardeId);
+    if (posFin >= 0 && posTarde >= 0) return { posFin, posTarde, puentesCiclo: (prev.estadoFinal.puentesCiclo || []).filter(id => cfg.operarios.some(o => o.id === id)), origen: 'continúa desde ' + (year - 1) };
+  }
+  const s = cfg.semilla;
+  if (s && Number(s.desdeAnio) === year) {
+    const posFin = cfg.puestosFin.indexOf(s.finId), posTarde = cfg.puestosTarde.indexOf(s.tardeId);
+    if (posFin < 0 || posTarde < 0) throw new Error('El punto de partida de Configuración no coincide con los puestos actuales. Revísalo.');
+    return { posFin, posTarde, puentesCiclo: (s.puentesCiclo || []).filter(id => cfg.operarios.some(o => o.id === id)), origen: 'punto de partida de Configuración' };
+  }
+  throw new Error(`No hay punto de partida para ${year}. Guarda antes el año ${year - 1}, o define en Configuración el punto de partida para ${year}.`);
+}
+
+/* ── Generar (borrador) ── */
+async function _cqGenerar() {
+  try {
+    _cqMsg('');
+    const cfg = _cq.config, year = parseInt(document.getElementById('cqGenAnio').value, 10);
+    if (!(year >= 2000 && year <= 2100)) throw new Error('Año no válido.');
+    const ids = cfg.operarios.map(o => o.id);
+    if (ids.length < 2 || cfg.puestosFin.length !== ids.length || !cfg.puestosTarde.length) throw new Error('Configura primero operarios y puestos en la pestaña Configuración.');
+    const est = await _cqEstadoInicial(year);
+    const hojas = {}; Object.keys(CQ_HORAS_DEF).forEach(k => { const v = parseFloat(String((document.getElementById('cqH_' + k) || {}).value).replace(',', '.')); hojas[k] = isNaN(v) ? CQ_HORAS_DEF[k] : v; });
+    const fest = _cq.festivosEdit.filter(f => f.fecha);
+    fest.forEach(f => { if (!/^\d{4}-\d{2}-\d{2}$/.test(f.fecha) || f.fecha.slice(0, 4) !== String(year)) throw new Error(`Festivo fuera del año ${year}: ${f.fecha}`); });
+    const festIso = [...new Set(fest.map(f => f.fecha))].sort();
+    const locales = {};
+    ids.forEach(id => { const v = [0, 1, 2].map(k => (document.getElementById(`cqLoc_${id}_${k}`) || {}).value).filter(Boolean); v.forEach(f => { if (f.slice(0, 4) !== String(year)) throw new Error(`Festivo local fuera del año ${year}: ${f}`); }); if (v.length) locales[id] = [...new Set(v)].sort(); });
+    const excluidos = {}; ids.forEach(id => { const v = (_cq.excl[id] || []).filter(f => festIso.includes(f)); if (v.length) excluidos[id] = v; });
+    const base = { year, operarios: ids, puestosFin: cfg.puestosFin, posFin0: est.posFin, puestosTarde: cfg.puestosTarde, posTarde0: est.posTarde, festivos: festIso, locales, excluidos };
+    const g1 = cuadranteGenerar(base);
+    const rp = cuadranteProponerFestivos({ year, operarios: ids, festivos: festIso, grid: g1.grid, excluidos, estado: { puentesCiclo: est.puentesCiclo } });
+    const g2 = cuadranteGenerar({ ...base, festivosTrabajados: rp.festivosTrabajados });
+    const autor = (typeof _sesionAutor === 'function' ? _sesionAutor() : {}) || {};
+    _cq.borrador = {
+      year, operarios: cfg.operarios.map(o => ({ id: o.id, nombre: o.nombre, uid: o.uid || '' })), puestosFin: cfg.puestosFin.slice(), puestosTarde: cfg.puestosTarde.slice(),
+      festivos: fest.map(f => ({ fecha: f.fecha, nombre: f.nombre || '' })), locales, excluidos, dias: _cqDiasDeGrid(g2.grid, year, ids), puentes: rp.puentes,
+      estadoInicial: { posFin: est.posFin, posTarde: est.posTarde, puentesCiclo: est.puentesCiclo },
+      estadoFinal: { posFin: g2.estado.posFin, posTarde: g2.estado.posTarde, puentesCiclo: rp.estado.puentesCiclo, finId: cfg.puestosFin[g2.estado.posFin], tardeId: cfg.puestosTarde[g2.estado.posTarde] },
+      horas: hojas, generado: new Date().toISOString(), generadoPor: autor.nombre || ''
+    };
+    _cq.borradorOrigen = est.origen;
+    _cqRenderBorrador();
+    _cqMsg(`Borrador de ${year} generado (${est.origen}). Revísalo y pulsa «Guardar año».`, true);
+  } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
+}
+
+async function _cqGuardarAnio() {
+  try {
+    const d = _cq.borrador; if (!d) return;
+    const posteriores = _cq.indice.filter(y => y > d.year);
+    if (_cq.indice.includes(d.year) || posteriores.length) {
+      const txt = (_cq.indice.includes(d.year) ? `El año ${d.year} ya está guardado y se sobrescribirá.\n` : '') + (posteriores.length ? `Hay años posteriores guardados (${posteriores.join(', ')}); habrá que regenerarlos para que continúen desde este.\n` : '') + '\n¿Continuar?';
+      if (!confirm(txt)) return;
+    }
+    await realDb.ref().update({ [`${CQ_BASE}/anios/${d.year}`]: d, [`${CQ_BASE}/indice/${d.year}`]: _cq.pub[d.year] === true, [`${CQ_BASE}/config/horas`]: d.horas });
+    _cq.docs[d.year] = _cqNormalizarDoc(d); delete _cq.docs[d.year + 1];
+    _cq.pub[d.year] = _cq.pub[d.year] === true;
+    if (!_cq.indice.includes(d.year)) { _cq.indice.push(d.year); _cq.indice.sort((a, b) => a - b); }
+    _cq.config.horas = { ...d.horas };
+    _cqMsg(`Año ${d.year} guardado correctamente.`, true);
+    _cqRellenarSelectAnios();
+    _cqRenderHorasEdit();
+  } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
+}
+
+/* ── Renderizado de la rejilla mensual y del resumen ── */
+function _cqRenderMes(host, doc, mes, filtro, editable) {
+  if (!host) return;
+  const y = doc.year, nd = new Date(Date.UTC(y, mes + 1, 0)).getUTCDate();
+  const festNombre = {}; (doc.festivos || []).forEach(f => { festNombre[f.fecha] = f.nombre || 'Festivo'; });
+  const locNombre = {}; Object.keys(doc.locales || {}).forEach(id => (doc.locales[id] || []).forEach(f => { (locNombre[f] = locNombre[f] || []).push(id); }));
+  let h = `<div class="cq-scroll"><table class="cq-tabla"><thead><tr><th class="cq-nombre">${CQ_MESES[mes]} ${y}</th>`;
+  for (let d = 1; d <= nd; d++) {
+    const iso = cqIso(new Date(Date.UTC(y, mes, d))), wd = (cqDate(iso).getUTCDay() + 6) % 7;
+    h += `<th class="${wd >= 5 ? 'cq-fin ' : ''}${festNombre[iso] ? 'cq-fest' : ''}" title="${_cqEsc(festNombre[iso] || '')}">${d}<small>${CQ_DIASEM[wd]}</small></th>`;
+  }
+  h += '</tr></thead><tbody>';
+  (doc.operarios || []).filter(o => !filtro || o.id === filtro).forEach(o => {
+    h += `<tr><th class="cq-nombre">${_cqEsc(o.nombre)}</th>`;
+    for (let d = 1; d <= nd; d++) {
+      const iso = cqIso(new Date(Date.UTC(y, mes, d))), wd = (cqDate(iso).getUTCDay() + 6) % 7, c = _cqCodigo(doc, o.id, iso);
+      h += `<td class="cq-c cq-${c}${wd >= 5 ? ' cq-fin' : ''}${editable ? ' cq-edit' : ''}"${editable ? ` data-op="${_cqEsc(o.id)}" data-fecha="${iso}"` : ''} title="${_cqEsc(o.nombre)} · ${iso} · ${_cqEsc(CQ_CODIGOS[c] || c)}${festNombre[iso] ? ' · ' + _cqEsc(festNombre[iso]) : ''}">${c}</td>`;
+    }
+    h += '</tr>';
+  });
+  host.innerHTML = h + '</tbody></table></div>' + _cqLeyenda();
+}
+function _cqLeyenda() {
+  return '<div class="cq-leyenda">' + Object.keys(CQ_CODIGOS).map(c => `<span><b class="cq-c cq-${c}">${c}</b> ${CQ_CODIGOS[c]}</span>`).join('') + '</div>';
+}
+function _cqHorasDiaAuto(doc, p) {
+  const ops = doc.operarios || []; if (!ops.length) return p.horasDia;
+  let ml = 0, otras = 0;
+  ops.forEach(o => {
+    const cnt = {}; Object.values(doc.dias[o.id] || {}).forEach(c => { cnt[c] = (cnt[c] || 0) + 1; });
+    ml += (cnt.M || 0) + (cnt.T || 0) - p.diasVacaciones;
+    otras += (cnt.FS || 0) * p.horasSabado + (cnt.FD || 0) * p.horasDomingo + (cnt.FT || 0) * p.horasFT + (cnt.FL || 0) * p.horasFL;
+  });
+  ml /= ops.length; otras /= ops.length;
+  return ml > 0 ? Math.round(((p.convenio - otras) / ml) * 100) / 100 : p.horasDia;
+}
+function _cqRenderHorasAnio(host, doc) {
+  if (!host) return;
+  const p = doc.horas, campos = ['convenio', 'horasDia', 'horasSabado', 'horasDomingo', 'horasFT', 'horasFL', 'diasVacaciones'];
+  host.innerHTML = `<h4 class="cq-sub">Horas del año ${doc.year}</h4><p class="cq-nota">Cambia las horas sin regenerar el año. «Calcular jornada» obtiene las horas de mañana/tarde a partir del convenio y de los valores de sábado, domingo y festivos (pueden ser 0).</p><div class="cq-barra">${campos.map(k => `<label class="cq-campo">${CQ_HORAS_ETQ[k]}<input type="text" inputmode="decimal" id="cqHA_${k}" value="${p[k]}"></label>`).join('')}<button type="button" class="button" data-act="horas-auto">↻ Calcular jornada</button><button type="button" class="button" data-act="horas-guardar">💾 Guardar horas</button></div>`;
+}
+function _cqFestDisfrutados(doc, id) {
+  const ex = (doc.excluidos || {})[id] || [];
+  return (doc.festivos || []).filter(f => { const wd = (cqDate(f.fecha).getUTCDay() + 6) % 7; return wd <= 4 && !ex.includes(f.fecha) && _cqCodigo(doc, id, f.fecha) === 'L'; }).length;
+}
+function _cqRenderResumen(host, doc, filtro) {
+  if (!host) return;
+  let tot = 0, totBal = 0; const p = doc.horas, nombreDe = id => ((doc.operarios || []).find(o => o.id === id) || {}).nombre || id;
+  const puentesDe = id => (doc.puentes || []).filter(x => x.id === id).map(x => x.fechas.join('+')).join('; ');
+  let h = `<h4 class="cq-sub">Resumen ${doc.year} · horas frente al convenio (${p.convenio} h)</h4><div class="cq-scroll"><table class="cq-tabla cq-resumen"><thead><tr><th class="cq-nombre">Operario</th><th>Mañana</th><th>Tarde</th><th>Sáb</th><th>Dom</th><th>Fest. trab.</th><th>Fest. disfrut.</th><th>Fest. local</th><th>Horas</th><th>Horas de más (+) / menos (−)</th><th>Puentes</th></tr></thead><tbody>`;
+  (doc.operarios || []).filter(o => !filtro || o.id === filtro).forEach(o => {
+    const r = cuadranteHoras(Object.assign({}, doc.dias[o.id] || []), p), bal = r.h.total - p.convenio; tot += r.h.total; totBal += bal;
+    h += `<tr><th class="cq-nombre">${_cqEsc(o.nombre)}</th><td>${r.cnt.M || 0}</td><td>${r.cnt.T || 0}</td><td>${r.cnt.FS || 0}</td><td>${r.cnt.FD || 0}</td><td>${r.cnt.FT || 0}</td><td>${_cqFestDisfrutados(doc, o.id)}</td><td>${r.cnt.FL || 0}</td><td><b>${r.h.total.toFixed(2)}</b></td><td class="${bal < 0 ? 'cq-neg' : 'cq-pos'}">${bal > 0 ? '+' : ''}${bal.toFixed(2)}</td><td class="cq-izq">${_cqEsc(puentesDe(o.id)) || '–'}</td></tr>`;
+  });
+  h += `<tr><th class="cq-nombre">Total</th><td colspan="7"></td><td><b>${tot.toFixed(2)}</b></td><td class="${totBal < 0 ? 'cq-neg' : 'cq-pos'}"><b>${totBal > 0 ? '+' : ''}${totBal.toFixed(2)}</b></td><td></td></tr>`;
+  host.innerHTML = h + '</tbody></table></div>';
+}
+
+/* ── ¿Quién está de tarde? (para asignar trabajos del turno de tarde) ── */
+function _cqFechaLocal(d) { d = d || new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+async function _cqDatosParaFecha(anio) {
+  if (!_cq.config) { const c = await _cqRef('config').once('value'); _cq.config = c.val() ? _cqNormalizarConfig(c.val()) : _cqConfigVacia(); }
+  return { cfg: _cq.config, doc: await _cqCargarAnio(anio) };
+}
+function _cqUidDe(cfg, opId) { const o = (cfg.operarios || []).find(x => x.id === opId); return o ? (o.uid || '') : ''; }
+// Devuelve el operario con turno de tarde en la semana (lunes-viernes) de la fecha indicada
+async function cuadranteQuienDeTarde(iso) {
+  const y = parseInt(String(iso).slice(0, 4), 10), { cfg, doc } = await _cqDatosParaFecha(y);
+  if (!doc) return null;
+  const lun = cqLunes(cqDate(iso));
+  for (let k = 0; k < 5; k++) {
+    const dia = cqIso(new Date(lun.getTime() + k * CQ_MS));
+    if (dia.slice(0, 4) !== String(y)) continue;
+    const o = (doc.operarios || []).find(op => _cqCodigo(doc, op.id, dia) === 'T');
+    if (o) return { id: o.id, nombre: o.nombre, uid: _cqUidDe(cfg, o.id) || o.uid || '' };
+  }
+  return null;
+}
+// Botón «🌙 De tarde» de las listas de asignación: marca a quien está de tarde en la semana de la fecha del trabajo
+async function cuadranteAsignarTarde(btn) {
+  try {
+    const cont = btn.closest('.asig-checkbox-container'); if (!cont) return;
+    let fecha = '';
+    const ambito = cont.closest('.work-order-edit-form, .pending-record, .form-group') || document;
+    const inp = (cont.closest('.work-order-edit-form') || cont.closest('.pending-record') || document).querySelector('input[type="date"]');
+    if (inp && inp.value) fecha = inp.value;
+    if (!fecha) { const g = document.getElementById('fechaMantenimiento'); if (g && g.value) fecha = g.value; }
+    if (!fecha) fecha = _cqFechaLocal();
+    const q = await cuadranteQuienDeTarde(fecha);
+    if (!q) return alert(`No hay cuadrante guardado con turno de tarde para la semana de ${fecha}.`);
+    const chk = q.uid ? [...cont.querySelectorAll('input[type="checkbox"]')].find(c => c.value === q.uid) : null;
+    if (!chk) return alert(`${q.nombre} está de tarde esa semana, pero no está vinculado a un usuario de la app. Vincúlalo en Cuadrante → Configuración.`);
+    cont.querySelectorAll('input[type="checkbox"]').forEach(c => { c.checked = false; const l = c.closest('label'); if (l) l.classList.remove('seleccionado'); });
+    chk.checked = true; const lab = chk.closest('label'); if (lab) lab.classList.add('seleccionado');
+    btn.textContent = `🌙 ${q.nombre}`;
+  } catch (e) { alert('No se pudo consultar el cuadrante: ' + _cqErrorLegible(e)); }
+}
+
+/* ── Aviso en el menú: turno de tarde, fines de semana y festivos propios ── */
+async function _cqAvisoMenu() {
+  const menu = document.getElementById('menuScreen'); if (!menu) return;
+  let el = document.getElementById('cqAvisoMenu');
+  const quitar = () => { if (el) el.style.display = 'none'; };
+  try {
+    const uid = localStorage.getItem('usuarioUid'); if (!uid) return quitar();
+    const hoy = new Date(), y = hoy.getFullYear();
+    const { cfg, doc } = await _cqDatosParaFecha(y);
+    if (!doc) return quitar();
+    const op = (cfg.operarios || []).find(o => o.uid === uid) || (doc.operarios || []).find(o => o.uid === uid);
+    if (!op) return quitar();
+    const iso0 = _cqFechaLocal(hoy), lun = cqLunes(cqDate(iso0)), fmt = iso => `${iso.slice(8)}/${iso.slice(5, 7)}`;
+    const cod = d => _cqCodigo(doc, op.id, d);
+    const lineas = [];
+    const semana = Array.from({ length: 5 }, (_, k) => cqIso(new Date(lun.getTime() + k * CQ_MS))).filter(d => d.slice(0, 4) === String(y));
+    if (semana.some(d => cod(d) === 'T')) lineas.push('🌙 Esta semana tienes turno de <b>TARDE</b>.');
+    // próximo fin de semana propio (hoy incluido) y festivos trabajados en los próximos 30 días
+    let finde = null, fest = [];
+    for (let k = 0; k < 120; k++) {
+      const d = cqIso(new Date(cqDate(iso0).getTime() + k * CQ_MS)); if (d.slice(0, 4) !== String(y)) break;
+      const c = cod(d);
+      if (!finde && (c === 'FS' || c === 'FD')) finde = d;
+      if (c === 'FT' && k <= 30) fest.push(d);
+    }
+    if (finde) { const k = Math.round((cqDate(finde).getTime() - cqDate(iso0).getTime()) / CQ_MS); lineas.push(k <= 6 ? `📅 Este fin de semana te toca trabajar (${fmt(finde)}).` : `📅 Próximo fin de semana que te toca: ${fmt(finde)}.`); }
+    if (fest.length) lineas.push(`🎌 Festivo${fest.length > 1 ? 's' : ''} trabajado${fest.length > 1 ? 's' : ''}: ${fest.map(fmt).join(', ')}.`);
+    if (!lineas.length) return quitar();
+    if (!el) { el = document.createElement('div'); el.id = 'cqAvisoMenu'; el.className = 'cq-aviso'; const t = menu.querySelector('h1.title'); if (t) t.insertAdjacentElement('afterend', el); else menu.insertBefore(el, menu.firstChild); }
+    el.style.display = ''; el.innerHTML = `<b>${_cqEsc(op.nombre)}</b><br>` + lineas.join('<br>');
+  } catch (e) { quitar(); }
+}
+
+/* ── Cambio manual de un turno (administrador) ── */
+function _cqEditarCelda(opId, iso) {
+  const doc = _cq.docs[_cq.anio]; if (!doc || !_cqEsAdmin()) return;
+  const op = doc.operarios.find(o => o.id === opId); if (!op) return;
+  const actual = _cqCodigo(doc, opId, iso);
+  const cont = _crearPopup('Cambiar turno');
+  cont.innerHTML = `<p><b>${_cqEsc(op.nombre)}</b> · ${_cqEsc(iso.slice(8) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4))}<br>Turno actual: <b>${_cqEsc(actual)}</b> (${_cqEsc(CQ_CODIGOS[actual] || '')})</p>
+    <div class="form-group"><label>Nuevo turno</label><select id="cqEdCodigo">${Object.keys(CQ_CODIGOS).map(c => `<option value="${c}"${c === actual ? ' selected' : ''}>${c} · ${CQ_CODIGOS[c]}</option>`).join('')}</select></div>
+    <div class="form-group"><label>Motivo (opcional)</label><input type="text" id="cqEdMotivo" placeholder="Cambio con compañero, baja…"></div>
+    <p class="cq-nota">El cambio solo afecta a este día: el ciclo de años siguientes no se recalcula.</p>
+    <div class="edit-delete-buttons"><button type="button" class="button" id="cqEdOk">Guardar</button><button type="button" class="button" onclick="closePopup(this)">Cancelar</button></div>`;
+  document.getElementById('cqEdOk').addEventListener('click', async () => {
+    try {
+      const nuevo = document.getElementById('cqEdCodigo').value, motivo = document.getElementById('cqEdMotivo').value.trim();
+      if (nuevo === actual) return closePopup(document.getElementById('cqEdOk'));
+      const idx = Math.round((cqDate(iso).getTime() - Date.UTC(doc.year, 0, 1)) / CQ_MS), autor = (typeof _sesionAutor === 'function' ? _sesionAutor() : {}) || {};
+      await realDb.ref().update({ [`${CQ_BASE}/anios/${doc.year}/dias/${opId}/${idx}`]: nuevo,
+        [`${CQ_BASE}/anios/${doc.year}/ajustes/a${Date.now()}`]: { operario: opId, fecha: iso, antes: actual, despues: nuevo, motivo, por: autor.nombre || '', cuando: new Date().toISOString() } });
+      doc.dias[opId][idx] = nuevo; closePopup(document.getElementById('cqEdOk')); _cqMsg(`Turno cambiado: ${op.nombre} ${iso} ${actual} → ${nuevo}.`, true); _cqRenderConsulta();
+    } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
+  });
+}
+
+/* ── Exportar a Excel ── */
+function _cqCargarExcelJS() {
+  return new Promise((ok, ko) => {
+    if (window.ExcelJS) return ok();
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js';
+    s.onload = ok; s.onerror = () => ko(new Error('No se pudo cargar la librería de Excel (¿sin conexión?).'));
+    document.head.appendChild(s);
+  });
+}
+async function cuadranteExportarExcel() {
+  try {
+    const doc = await _cqCargarAnio(_cq.anio); if (!doc) return _cqMsg('No hay ningún año seleccionado.', false);
+    await _cqCargarExcelJS();
+    const y = doc.year, wb = new ExcelJS.Workbook(), p = doc.horas;
+    const rgb = h => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + h } });
+    const bd = { style: 'thin', color: { argb: 'FFBFBFBF' } }, bordes = { top: bd, left: bd, bottom: bd, right: bd };
+    const centro = { horizontal: 'center', vertical: 'middle' };
+    const COL = { M: 'DCE8FD', T: 'FCE2B6', FS: 'E5CCFD', FD: 'E5CCFD', FT: 'F9B8B8', FL: 'C8F0D7' };
+    const DS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+    const fmt = iso => iso.split('-').reverse().join('/');
+    const wdDe = iso => (cqDate(iso).getUTCDay() + 6) % 7;
+    const festNombre = {}; (doc.festivos || []).forEach(f => { festNombre[f.fecha] = f.nombre || 'Festivo'; });
+    const cabecera = (hoja, vals) => { const r = hoja.addRow(vals); r.height = 26; r.eachCell(c => { c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = rgb('1F3A5F'); c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; c.border = bordes; }); return r; };
+
+    /* Hoja 1: Cuadrante */
+    const ws = wb.addWorksheet('Cuadrante', { views: [{ state: 'frozen', xSplit: 1 }], pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
+    ws.getColumn(1).width = 26; for (let c = 2; c <= 32; c++) ws.getColumn(c).width = 4.3;
+    for (let mes = 0; mes < 12; mes++) {
+      const nd = new Date(Date.UTC(y, mes + 1, 0)).getUTCDate();
+      const t = ws.addRow([`${CQ_MESES[mes].toUpperCase()} ${y}`]); ws.mergeCells(t.number, 1, t.number, nd + 1);
+      t.height = 22; t.getCell(1).font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } }; t.getCell(1).fill = rgb('1F3A5F'); t.getCell(1).alignment = { vertical: 'middle' };
+      const hN = ws.addRow(['Empleado']), hL = ws.addRow(['']);
+      [hN.getCell(1), hL.getCell(1)].forEach(c => { c.fill = rgb('F2F4F8'); c.border = bordes; c.font = { bold: true }; });
+      for (let d = 1; d <= nd; d++) {
+        const iso = cqIso(new Date(Date.UTC(y, mes, d))), wd = wdDe(iso), fest = !!festNombre[iso];
+        const a = hN.getCell(d + 1), b = hL.getCell(d + 1); a.value = d; b.value = CQ_DIASEM[wd];
+        [a, b].forEach(c => { c.alignment = centro; c.border = bordes; c.fill = rgb(fest ? 'FDE2E2' : wd >= 5 ? 'E7E7EA' : 'F2F4F8'); c.font = { bold: c === a, size: c === a ? 10 : 8, color: { argb: fest ? 'FFC62828' : 'FF333333' } }; });
+        if (fest) a.note = festNombre[iso];
+      }
+      doc.operarios.forEach(o => {
+        const row = ws.addRow([o.nombre]), n = row.getCell(1);
+        n.font = { bold: true }; n.border = bordes; n.alignment = { vertical: 'middle', wrapText: true };
+        for (let d = 1; d <= nd; d++) {
+          const iso = cqIso(new Date(Date.UTC(y, mes, d))), wd = wdDe(iso), c = _cqCodigo(doc, o.id, iso), cell = row.getCell(d + 1);
+          cell.value = c; cell.alignment = centro; cell.border = bordes;
+          cell.font = { size: 9, bold: c === 'FT', color: { argb: c === 'L' ? 'FF8A8A8A' : 'FF222222' } };
+          if (COL[c]) cell.fill = rgb(COL[c]); else if (wd >= 5) cell.fill = rgb('F3F3F5');
+        }
+      });
+      ws.addRow([]);
+    }
+    ws.addRow(['Leyenda']).getCell(1).font = { bold: true, size: 12 };
+    Object.keys(CQ_CODIGOS).forEach(k => { const r = ws.addRow([CQ_CODIGOS[k], k]), c = r.getCell(2); c.alignment = centro; c.border = bordes; c.font = { bold: k === 'FT', size: 9 }; if (COL[k]) c.fill = rgb(COL[k]); });
+
+    /* Hoja 2: Resumen */
+    const wr = wb.addWorksheet('Resumen');
+    wr.columns = [30, 11, 11, 11, 11, 14, 14, 12, 12, 12, 12, 40].map(w => ({ width: w }));
+    const tr = wr.addRow([`Resumen ${y} · horas frente al convenio (${p.convenio} h)`]); tr.getCell(1).font = { bold: true, size: 13 }; wr.addRow([]);
+    cabecera(wr, ['Operario', 'Mañanas', 'Tardes', 'Sábados', 'Domingos', 'Fest. trabajados', 'Fest. disfrutados', 'Fest. locales', 'Horas', 'Convenio', 'Balance', 'Puentes']);
+    doc.operarios.forEach((o, i) => {
+      const r = cuadranteHoras(Object.assign({}, doc.dias[o.id] || []), p), bal = Math.round((r.h.total - p.convenio) * 100) / 100;
+      const pu = (doc.puentes || []).filter(x => x.id === o.id).map(x => x.fechas.map(fmt).join(' + ')).join('; ') || '–';
+      const row = wr.addRow([o.nombre, r.cnt.M || 0, r.cnt.T || 0, r.cnt.FS || 0, r.cnt.FD || 0, r.cnt.FT || 0, _cqFestDisfrutados(doc, o.id), r.cnt.FL || 0, Math.round(r.h.total * 100) / 100, p.convenio, bal, pu]);
+      row.eachCell((c, n) => { c.border = bordes; c.alignment = (n === 1 || n === 12) ? { vertical: 'middle', wrapText: true } : centro; if (i % 2) c.fill = rgb('F6F7FA'); });
+      row.getCell(1).font = { bold: true }; row.getCell(9).font = { bold: true }; row.getCell(9).numFmt = '0.00';
+      row.getCell(11).font = { bold: true, color: { argb: bal < 0 ? 'FFC62828' : 'FF2E7D32' } }; row.getCell(11).numFmt = '+0.00;-0.00;0.00';
+    });
+    wr.addRow([]); wr.addRow(['Parámetros del año']).getCell(1).font = { bold: true, size: 12 };
+    Object.keys(CQ_HORAS_ETQ).forEach(k => { const r = wr.addRow([CQ_HORAS_ETQ[k], p[k]]); r.getCell(1).border = bordes; r.getCell(2).border = bordes; r.getCell(2).alignment = centro; });
+
+    /* Hoja 3: Festivos */
+    const wf = wb.addWorksheet('Festivos'); wf.columns = [{ width: 30 }, { width: 16 }, { width: 50 }];
+    const sub = txt => { wf.addRow([]); const r = wf.addRow([txt]); r.getCell(1).font = { bold: true, size: 12 }; };
+    const fila2 = (a, b) => { const r = wf.addRow([a, b]); wf.mergeCells(r.number, 2, r.number, 3); r.getCell(1).font = { bold: true }; r.getCell(2).alignment = { wrapText: true, vertical: 'middle' }; [1, 2, 3].forEach(k => { r.getCell(k).border = bordes; }); };
+    wf.addRow([`Festivos ${y}`]).getCell(1).font = { bold: true, size: 13 };
+    wf.addRow([]); cabecera(wf, ['Fecha', 'Día', 'Festivo']);
+    (doc.festivos || []).forEach(f => { const r = wf.addRow([fmt(f.fecha), DS[wdDe(f.fecha)], f.nombre || '']); r.eachCell(c => { c.border = bordes; }); });
+    sub('Festivos locales de cada operario'); cabecera(wf, ['Operario', 'Fechas', '']);
+    doc.operarios.forEach(o => fila2(o.nombre, ((doc.locales || {})[o.id] || []).map(fmt).join(', ') || '–'));
+    sub('Festivos nacionales que NO aplican a cada operario'); cabecera(wf, ['Operario', 'Fechas', '']);
+    doc.operarios.forEach(o => fila2(o.nombre, ((doc.excluidos || {})[o.id] || []).map(f => fmt(f) + (festNombre[f] ? ' (' + festNombre[f] + ')' : '')).join(', ') || '–'));
+
+    const buf = await wb.xlsx.writeBuffer();
+    _descargarLocal(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `Cuadrante_${y}.xlsx`);
+    _cqMsg(`Cuadrante ${y} exportado a Excel.`, true);
+  } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
+}
+async function _cqExportarExcelViejo() {
+  try {
+    const doc = await _cqCargarAnio(_cq.anio); if (!doc) return _cqMsg('No hay ningún año seleccionado.', false);
+    if (typeof XLSX === 'undefined') return _cqMsg('La librería de Excel no está cargada.', false);
+    const y = doc.year, hojaCuadrante = [];
+    for (let mes = 0; mes < 12; mes++) {
+      const nd = new Date(Date.UTC(y, mes + 1, 0)).getUTCDate();
+      hojaCuadrante.push([`${CQ_MESES[mes].toUpperCase()} ${y}`]);
+      hojaCuadrante.push(['Empleado', ...Array.from({ length: nd }, (_, i) => i + 1)]);
+      hojaCuadrante.push(['', ...Array.from({ length: nd }, (_, i) => CQ_DIASEM[(cqDate(cqIso(new Date(Date.UTC(y, mes, i + 1)))).getUTCDay() + 6) % 7])]);
+      doc.operarios.forEach(o => hojaCuadrante.push([o.nombre, ...Array.from({ length: nd }, (_, i) => _cqCodigo(doc, o.id, cqIso(new Date(Date.UTC(y, mes, i + 1)))))]));
+      hojaCuadrante.push([]);
+    }
+    const p = doc.horas, hojaHoras = [['Operario', 'Mañanas', 'Tardes', 'Sábados', 'Domingos', 'Festivos trabajados', 'Festivos locales', 'Horas', 'Convenio', 'Balance', 'Puentes']];
+    doc.operarios.forEach(o => { const r = cuadranteHoras(Object.assign({}, doc.dias[o.id] || []), p); hojaHoras.push([o.nombre, r.cnt.M || 0, r.cnt.T || 0, r.cnt.FS || 0, r.cnt.FD || 0, r.cnt.FT || 0, r.cnt.FL || 0, Math.round(r.h.total * 100) / 100, p.convenio, Math.round((r.h.total - p.convenio) * 100) / 100, (doc.puentes || []).filter(x => x.id === o.id).map(x => x.fechas.join('+')).join('; ')]); });
+    hojaHoras.push([], ['Parámetros'], ...Object.keys(CQ_HORAS_ETQ).map(k => [CQ_HORAS_ETQ[k], p[k]]));
+    const hojaFest = [['Fecha', 'Festivo'], ...(doc.festivos || []).map(f => [f.fecha, f.nombre]), [], ['Festivos locales'], ...Object.keys(doc.locales || {}).map(id => [((doc.operarios.find(o => o.id === id)) || {}).nombre || id, (doc.locales[id] || []).join(', ')])];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hojaCuadrante), 'Cuadrante');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hojaHoras), 'Horas');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hojaFest), 'Festivos');
+    XLSX.writeFile(wb, `Cuadrante_${y}.xlsx`);
+    _cqMsg(`Cuadrante ${y} exportado a Excel.`, true);
+  } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
+}
+
+/* ── Pestaña Consultar ── */
+function _cqRellenarSelectAnios() {
+  const sel = document.getElementById('cqAnio'); if (!sel) return;
+  sel.innerHTML = _cq.indice.length ? _cq.indice.map(y => `<option value="${y}">${y}${_cq.pub[y] === true ? '' : ' (oculto)'}</option>`).join('') : '<option value="">(sin años guardados)</option>';
+  if (_cq.anio && _cq.indice.includes(_cq.anio)) sel.value = String(_cq.anio);
+  else if (_cq.indice.length) { const hoy = new Date().getFullYear(); _cq.anio = _cq.indice.includes(hoy) ? hoy : _cq.indice[_cq.indice.length - 1]; sel.value = String(_cq.anio); }
+}
+async function _cqRenderConsulta() {
+  const vista = document.getElementById('cqVista'), res = document.getElementById('cqResumen');
+  if (!vista) return;
+  if (!_cq.anio) { vista.innerHTML = '<p class="cq-vacio">Todavía no hay ningún año guardado.' + (_cqEsAdmin() ? ' Ve a «Configuración» y «Generar año».' : '') + '</p>'; if (res) res.innerHTML = ''; return; }
+  const doc = await _cqCargarAnio(_cq.anio);
+  if (!doc) { vista.innerHTML = '<p class="cq-vacio">No se pudo cargar el año.</p>'; return; }
+  const fs = document.getElementById('cqFiltro');
+  if (fs) { const v = fs.value; fs.innerHTML = '<option value="">Todos</option>' + doc.operarios.map(o => `<option value="${_cqEsc(o.id)}">${_cqEsc(o.nombre)}</option>`).join(''); fs.value = doc.operarios.some(o => o.id === v) ? v : ''; _cq.filtro = fs.value; }
+  const bp = document.getElementById('cqBtnPub'); if (bp) bp.textContent = _cq.pub[_cq.anio] === true ? '🙈 Ocultar a usuarios' : '✅ Publicar a usuarios';
+  _cqRenderMes(vista, doc, _cq.mes, _cq.filtro, _cqEsAdmin());
+  if (_cqEsAdmin()) { _cqRenderResumen(res, doc, _cq.filtro); _cqRenderHorasAnio(document.getElementById('cqHorasAnio'), doc); } else { if (res) res.innerHTML = ''; const ha = document.getElementById('cqHorasAnio'); if (ha) ha.innerHTML = ''; }
+}
+
+/* ── Pestaña Generar año (administrador) ── */
+function _cqRenderFestivosEdit() {
+  const host = document.getElementById('cqFestivos'); if (!host) return;
+  host.innerHTML = (_cq.festivosEdit.length ? '' : '<p class="cq-vacio">Sin festivos. Pulsa «Proponer festivos» o añade uno.</p>') +
+    _cq.festivosEdit.map((f, i) => `<div class="cq-fila"><input type="date" data-f="fest-fecha" data-i="${i}" value="${_cqEsc(f.fecha)}"><input type="text" data-f="fest-nombre" data-i="${i}" value="${_cqEsc(f.nombre)}" placeholder="Nombre del festivo"><button type="button" class="cq-mini" data-act="fest-del" data-i="${i}" aria-label="Quitar">✕</button></div>`).join('');
+  _cqRenderExcluidosEdit();
+}
+function _cqRenderExcluidosEdit() {
+  const host = document.getElementById('cqExcluidos'); if (!host || !_cq.config) return;
+  const fest = _cq.festivosEdit.filter(f => f.fecha);
+  host.innerHTML = fest.length ? _cq.config.operarios.map(o => `<div class="cq-fila"><span class="cq-etq">${_cqEsc(o.nombre)}</span>${fest.map(f => `<label style="margin-right:8px"><input type="checkbox" data-f="excl" data-id="${_cqEsc(o.id)}" data-fecha="${_cqEsc(f.fecha)}"${(_cq.excl[o.id] || []).includes(f.fecha) ? ' checked' : ''}> ${_cqEsc(f.nombre || f.fecha)}</label>`).join('')}</div>`).join('') : '<p class="cq-vacio">Añade primero los festivos.</p>';
+}
+function _cqRenderLocalesEdit() {
+  const host = document.getElementById('cqLocales'); if (!host || !_cq.config) return;
+  const y = parseInt((document.getElementById('cqGenAnio') || {}).value, 10);
+  let prev = {};
+  if (_cq.borrador && _cq.borrador.year === y) prev = _cq.borrador.locales || {};
+  else if (y >= 2000 && y <= 2100) {
+    // Los festivos locales suelen repetirse en la misma fecha: se propone la del último año guardado (revísalas)
+    const ant = _cq.indice.filter(a => a < y).pop(), d = ant && _cq.docs[ant];
+    if (d) Object.keys(d.locales || {}).forEach(id => { prev[id] = (d.locales[id] || []).map(f => `${y}${f.slice(4)}`).filter(f => { const t = Date.parse(f); return !isNaN(t) && cqIso(new Date(t)) === f; }); });
+  }
+  host.innerHTML = _cq.config.operarios.map(o => `<div class="cq-fila"><span class="cq-etq">${_cqEsc(o.nombre)}</span>${[0, 1, 2].map(k => `<input type="date" id="cqLoc_${_cqEsc(o.id)}_${k}" value="${_cqEsc(((prev[o.id] || [])[k]) || '')}">`).join('')}</div>`).join('');
+}
+function _cqRenderHorasEdit() {
+  const host = document.getElementById('cqHoras'); if (!host || !_cq.config) return;
+  const ult = _cq.indice.length ? (_cq.docs[_cq.indice[_cq.indice.length - 1]] || {}).horas : null, base = { ...CQ_HORAS_DEF, ..._cq.config.horas, ...(ult || {}) };
+  host.innerHTML = Object.keys(CQ_HORAS_DEF).map(k => `<label class="cq-campo">${CQ_HORAS_ETQ[k]}<input type="text" inputmode="decimal" id="cqH_${k}" value="${_cqEsc(base[k])}"></label>`).join('');
+}
+function _cqRenderBorrador() {
+  const d = _cq.borrador, host = document.getElementById('cqBorrador'); if (!host || !d) return;
+  host.innerHTML = `<h4 class="cq-sub">Borrador ${d.year}</h4>
+    <div class="cq-barra"><label class="cq-campo">Mes<select id="cqBorMes">${CQ_MESES.map((m, i) => `<option value="${i}">${m}</option>`).join('')}</select></label><button type="button" class="button" data-act="guardar-anio">💾 Guardar año ${d.year}</button></div>
+    <div id="cqBorVista"></div><div id="cqBorResumen"></div>
+    <p class="cq-nota">Puentes propuestos: ${(d.puentes || []).map(p => `${_cqEsc(p.fechas.join(' + '))} → <b>${_cqEsc(((d.operarios.find(o => o.id === p.id)) || {}).nombre || p.id)}</b>`).join(' · ') || 'ninguno'}</p>`;
+  const sel = document.getElementById('cqBorMes'); sel.value = String(_cq.mes);
+  _cqRenderMes(document.getElementById('cqBorVista'), d, _cq.mes, '');
+  _cqRenderResumen(document.getElementById('cqBorResumen'), d, '');
+}
+
+/* ── Pestaña Configuración (administrador) ── */
+function _cqRenderConfig() {
+  const host = document.getElementById('cqConfig'); if (!host) return;
+  const c = _cq.cfgEdit; if (!c) return;
+  const opts = (sel, ids) => ids.map(id => { const o = c.operarios.find(x => x.id === id); return o ? `<option value="${_cqEsc(id)}"${id === sel ? ' selected' : ''}>${_cqEsc(o.nombre)}</option>` : ''; }).join('');
+  const todos = c.operarios.map(o => o.id), s = c.semilla || { desdeAnio: new Date().getFullYear() + 1, finId: todos[0], tardeId: (c.puestosTarde[0] || ''), puentesCiclo: [] };
+  host.innerHTML = `
+    <h4 class="cq-sub">Operarios · orden del ciclo de fines de semana</h4>
+    <p class="cq-nota">El orden de esta lista es el orden en que se turnan los fines de semana. Si un puesto lo ocupa otra persona, cambia el nombre en su fila.</p>
+    ${c.operarios.map((o, i) => `<div class="cq-fila"><span class="cq-num">${i + 1}</span><input type="text" data-f="op-nombre" data-i="${i}" value="${_cqEsc(o.nombre)}"><select data-f="op-uid" data-i="${i}" title="Usuario de la app"><option value="">(sin vincular)</option>${_cq.usuarios.map(u => `<option value="${_cqEsc(u.uid)}"${u.uid === o.uid ? ' selected' : ''}>${_cqEsc(u.nombre)}</option>`).join('')}</select><label class="cq-chk"><input type="checkbox" data-f="op-puente" data-id="${_cqEsc(o.id)}"${(s.puentesCiclo || []).includes(o.id) ? ' checked' : ''}> ya hizo puente</label><button type="button" class="cq-mini" data-act="op-up" data-i="${i}" aria-label="Subir">↑</button><button type="button" class="cq-mini" data-act="op-down" data-i="${i}" aria-label="Bajar">↓</button><button type="button" class="cq-mini" data-act="op-del" data-i="${i}" aria-label="Quitar">✕</button></div>`).join('')}
+    <button type="button" class="button" data-act="op-add">+ Añadir operario</button>
+    <h4 class="cq-sub">Puestos del turno de tarde (ciclo semanal, en orden)</h4>
+    ${c.puestosTarde.map((id, i) => `<div class="cq-fila"><span class="cq-num">${i + 1}</span><select data-f="tarde" data-i="${i}">${opts(id, todos)}</select><button type="button" class="cq-mini" data-act="tarde-del" data-i="${i}" aria-label="Quitar">✕</button></div>`).join('')}
+    <button type="button" class="button" data-act="tarde-add">+ Añadir puesto de tarde</button>
+    <h4 class="cq-sub">Punto de partida del ciclo</h4>
+    <p class="cq-nota">Solo se usa para generar el primer año. Después, cada año continúa desde el anterior guardado.</p>
+    <div class="cq-barra">
+      <label class="cq-campo">Año a generar<input type="number" data-f="sem" data-k="desdeAnio" value="${_cqEsc(s.desdeAnio)}"></label>
+      <label class="cq-campo">Trabaja el primer fin de semana<select data-f="sem" data-k="finId">${opts(s.finId, todos)}</select></label>
+      <label class="cq-campo">Tiene la tarde la semana del 1 de enero<select data-f="sem" data-k="tardeId">${opts(s.tardeId, c.puestosTarde)}</select></label>
+    </div>
+    <div class="cq-barra"><button type="button" class="button" data-act="cfg-guardar">💾 Guardar configuración</button><button type="button" class="button" data-act="cfg-semilla">Cargar datos de arranque (cuadrante 2026)</button></div>`;
+}
+function _cqLeerConfigEditada() {
+  const c = _cq.cfgEdit;
+  c.operarios.forEach(o => { o.nombre = (o.nombre || '').trim(); });
+  if (c.operarios.length < 2) throw new Error('Añade al menos 2 operarios.');
+  if (c.operarios.some(o => !o.nombre)) throw new Error('Hay operarios sin nombre.');
+  if (new Set(c.operarios.map(o => o.nombre.toLowerCase())).size !== c.operarios.length) throw new Error('Hay nombres de operario repetidos.');
+  if (!c.puestosTarde.length) throw new Error('Define al menos un puesto de tarde.');
+  if (new Set(c.puestosTarde).size !== c.puestosTarde.length) throw new Error('Un mismo operario aparece dos veces en los puestos de tarde.');
+  const s = c.semilla || {};
+  const uids = c.operarios.map(o => o.uid).filter(Boolean);
+  if (new Set(uids).size !== uids.length) throw new Error('Dos operarios están vinculados al mismo usuario de la app.');
+  return { operarios: c.operarios.map(o => ({ id: o.id, nombre: o.nombre, uid: o.uid || '' })), puestosFin: c.operarios.map(o => o.id), puestosTarde: c.puestosTarde.slice(),
+           horas: { ...(_cq.config ? _cq.config.horas : CQ_HORAS_DEF) },
+           semilla: { desdeAnio: parseInt(s.desdeAnio, 10) || (new Date().getFullYear() + 1), finId: s.finId || c.operarios[0].id, tardeId: s.tardeId || c.puestosTarde[0], puentesCiclo: (s.puentesCiclo || []).filter(id => c.operarios.some(o => o.id === id)) } };
+}
+async function _cqGuardarConfig() {
+  try {
+    const nueva = _cqLeerConfigEditada();
+    if (!nueva.puestosTarde.every(id => nueva.puestosFin.includes(id))) throw new Error('Un puesto de tarde apunta a un operario que ya no existe.');
+    await _cqRef('config').set(nueva);
+    _cq.config = _cqNormalizarConfig(nueva); _cq.cfgEdit = JSON.parse(JSON.stringify(_cq.config));
+    _cqRenderConfig(); _cqRenderLocalesEdit(); _cqRenderHorasEdit();
+    _cqMsg('Configuración guardada.', true);
+  } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
+}
+
+/* ── Pantalla: montaje, pestañas y eventos ── */
+function _cqTab(tab, sinRender) {
+  if ((tab === 'generar' || tab === 'config') && !_cqEsAdmin()) tab = 'consulta';
+  _cq.tab = tab;
+  document.querySelectorAll('#cuadranteScreen .cq-tab').forEach(b => b.classList.toggle('activo', b.dataset.tab === tab));
+  document.querySelectorAll('#cuadranteScreen .cq-panel').forEach(p => p.classList.toggle('activo', p.dataset.panel === tab));
+  _cqMsg('');
+  if (tab === 'consulta' && !sinRender && _cq.config) _cqRenderConsulta();
+}
+async function cuadranteAbrir() {
+  _cqMontar();
+  const admin = _cqEsAdmin();
+  document.querySelectorAll('#cuadranteScreen .cq-solo-admin').forEach(e => { e.style.display = admin ? '' : 'none'; });
+  _cqTab('consulta', true);
+  try {
+    await _cqCargar();
+    _cq.cfgEdit = JSON.parse(JSON.stringify(_cq.config));
+    const hoy = new Date(); if (!_cq.anio) _cq.mes = hoy.getMonth();
+    _cqRellenarSelectAnios();
+    const mes = document.getElementById('cqMes'); if (mes) mes.value = String(_cq.mes);
+    await _cqRenderConsulta();
+    if (admin) {
+      await _cqCargarUsuarios();
+      if (_cq.indice.length) await _cqCargarAnio(_cq.indice[_cq.indice.length - 1]);
+      const ga = document.getElementById('cqGenAnio'); if (ga && !ga.value) ga.value = String((_cq.indice.length ? _cq.indice[_cq.indice.length - 1] : (_cq.config.semilla && _cq.config.semilla.desdeAnio ? _cq.config.semilla.desdeAnio - 1 : new Date().getFullYear())) + 1);
+      _cqRenderConfig(); _cqRenderLocalesEdit(); _cqRenderHorasEdit(); _cqRenderFestivosEdit();
+    }
+  } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
+}
+async function _cqClick(ev) {
+  const celda = ev.target.closest('td[data-op]'); if (celda) return _cqEditarCelda(celda.dataset.op, celda.dataset.fecha);
+  const b = ev.target.closest('[data-act],[data-tab]'); if (!b) return;
+  if (b.dataset.tab) return _cqTab(b.dataset.tab);
+  const act = b.dataset.act, i = parseInt(b.dataset.i, 10), c = _cq.cfgEdit;
+  switch (act) {
+    case 'horas-auto': {
+      const doc = _cq.docs[_cq.anio]; if (!doc) break;
+      const q = { ...doc.horas };
+      ['convenio', 'horasSabado', 'horasDomingo', 'horasFT', 'horasFL', 'diasVacaciones'].forEach(k => { const v = parseFloat(String((document.getElementById('cqHA_' + k) || {}).value).replace(',', '.')); if (!isNaN(v)) q[k] = v; });
+      const hd = _cqHorasDiaAuto(doc, q), inp = document.getElementById('cqHA_horasDia'); if (inp) inp.value = hd;
+      _cqMsg(`Jornada calculada: ${hd.toFixed(2)} h por día de mañana/tarde. Pulsa «Guardar horas» para aplicarla.`, true);
+      break;
+    }
+    case 'horas-guardar': {
+      const doc = _cq.docs[_cq.anio]; if (!doc) break;
+      try {
+        const hh = {};
+        ['convenio', 'horasDia', 'horasSabado', 'horasDomingo', 'horasFT', 'horasFL', 'diasVacaciones'].forEach(k => { const v = parseFloat(String((document.getElementById('cqHA_' + k) || {}).value).replace(',', '.')); if (isNaN(v) || v < 0) throw new Error(`Valor no válido en «${CQ_HORAS_ETQ[k]}».`); hh[k] = v; });
+        await realDb.ref(`${CQ_BASE}/anios/${doc.year}/horas`).update(hh);
+        Object.assign(doc.horas, hh); _cqMsg(`Horas de ${doc.year} actualizadas.`, true); _cqRenderConsulta();
+      } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
+      break;
+    }
+    case 'publicar': {
+      if (!_cq.anio) break;
+      const nv = _cq.pub[_cq.anio] !== true;
+      try { await realDb.ref(`${CQ_BASE}/indice/${_cq.anio}`).set(nv); _cq.pub[_cq.anio] = nv; _cqRellenarSelectAnios(); _cqRenderConsulta(); _cqMsg(nv ? `Año ${_cq.anio} publicado: ya lo ven todos los usuarios.` : `Año ${_cq.anio} oculto para los usuarios.`, true); }
+      catch (e) { _cqMsg(_cqErrorLegible(e), false); }
+      break;
+    }
+    case 'fest-del': _cq.festivosEdit.splice(i, 1); _cqRenderFestivosEdit(); break;
+    case 'fest-add': _cq.festivosEdit.push({ fecha: '', nombre: '' }); _cqRenderFestivosEdit(); break;
+    case 'fest-proponer': {
+      const y = parseInt(document.getElementById('cqGenAnio').value, 10); if (!(y >= 2000 && y <= 2100)) return _cqMsg('Indica primero el año.', false);
+      const p = _cqProponerFestivosAnio(y); _cq.festivosEdit = p.lista; _cqRenderFestivosEdit();
+      _cqMsg(p.fuera.length ? `Propuestos ${p.lista.length} festivos entre semana. Caen en fin de semana y NO se han incluido: ${p.fuera.map(f => `${f.nombre} (${f.dia} ${f.fecha.slice(8)}/${f.fecha.slice(5, 7)})`).join(', ')}. Añádelos si hay día trasladado o si los computáis como festivo.` : `Propuestos ${p.lista.length} festivos entre semana. Revísalos y añade los autonómicos/locales que falten.`, true); break; }
+    case 'generar': await _cqGenerar(); break;
+    case 'exportar': await cuadranteExportarExcel(); break;
+    case 'guardar-anio': await _cqGuardarAnio(); break;
+    case 'op-add': { const n = 'Nuevo operario'; let id = _cqSlug(n + c.operarios.length + Date.now()); c.operarios.push({ id, nombre: '' }); _cqRenderConfig(); break; }
+    case 'op-del': { const o = c.operarios[i]; if (o && confirm(`¿Quitar a ${o.nombre || 'este operario'} del cuadrante?`)) { c.operarios.splice(i, 1); c.puestosTarde = c.puestosTarde.filter(id => id !== o.id); _cqRenderConfig(); } break; }
+    case 'op-up': if (i > 0) { [c.operarios[i - 1], c.operarios[i]] = [c.operarios[i], c.operarios[i - 1]]; _cqRenderConfig(); } break;
+    case 'op-down': if (i < c.operarios.length - 1) { [c.operarios[i + 1], c.operarios[i]] = [c.operarios[i], c.operarios[i + 1]]; _cqRenderConfig(); } break;
+    case 'tarde-add': { const libre = c.operarios.find(o => !c.puestosTarde.includes(o.id)); if (libre) { c.puestosTarde.push(libre.id); _cqRenderConfig(); } break; }
+    case 'tarde-del': c.puestosTarde.splice(i, 1); _cqRenderConfig(); break;
+    case 'cfg-guardar': await _cqGuardarConfig(); break;
+    case 'cfg-semilla': if (confirm('Se sustituirán los operarios y puestos actuales por los de tu cuadrante 2026 (sin guardar hasta que pulses «Guardar configuración»). ¿Continuar?')) { _cq.cfgEdit = _cqConfigSemilla2026(); _cqRenderConfig(); } break;
+  }
+}
+function _cqCambio(ev) {
+  const t = ev.target, f = t.dataset && t.dataset.f, c = _cq.cfgEdit;
+  if (t.id === 'cqAnio') { _cq.anio = parseInt(t.value, 10) || null; _cqRenderConsulta(); return; }
+  if (t.id === 'cqMes') { _cq.mes = parseInt(t.value, 10) || 0; _cqRenderConsulta(); return; }
+  if (t.id === 'cqFiltro') { _cq.filtro = t.value; _cqRenderConsulta(); return; }
+  if (t.id === 'cqBorMes') { _cq.mes = parseInt(t.value, 10) || 0; _cqRenderBorrador(); return; }
+  if (t.id === 'cqGenAnio') { _cq.festivosEdit = []; _cq.excl = {}; _cq.borrador = null; const b = document.getElementById('cqBorrador'); if (b) b.innerHTML = ''; _cqRenderFestivosEdit(); _cqRenderLocalesEdit(); return; }
+  if (!f) return;
+  const i = parseInt(t.dataset.i, 10);
+  if (f === 'fest-fecha') { _cq.festivosEdit[i].fecha = t.value; _cqRenderExcluidosEdit(); }
+  else if (f === 'fest-nombre') { _cq.festivosEdit[i].nombre = t.value; _cqRenderExcluidosEdit(); }
+  else if (f === 'op-nombre') c.operarios[i].nombre = t.value;
+  else if (f === 'op-uid') c.operarios[i].uid = t.value;
+  else if (f === 'op-puente') { c.semilla = c.semilla || { desdeAnio: new Date().getFullYear() + 1, finId: c.operarios[0].id, tardeId: c.puestosTarde[0], puentesCiclo: [] }; const s = new Set(c.semilla.puentesCiclo || []); t.checked ? s.add(t.dataset.id) : s.delete(t.dataset.id); c.semilla.puentesCiclo = [...s]; }
+  else if (f === 'tarde') c.puestosTarde[i] = t.value;
+  else if (f === 'excl') { const s = new Set(_cq.excl[t.dataset.id] || []); t.checked ? s.add(t.dataset.fecha) : s.delete(t.dataset.fecha); _cq.excl[t.dataset.id] = [...s]; }
+  else if (f === 'sem') { c.semilla = c.semilla || { puentesCiclo: [] }; c.semilla[t.dataset.k] = t.value; }
+}
+
+const CQ_CSS = `
+#cuadranteScreen .cq-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}
+#cuadranteScreen .cq-tab{padding:10px 16px;min-height:44px;background:var(--bg-card);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-md);cursor:pointer;font-family:var(--font-body);font-size:.9rem}
+#cuadranteScreen .cq-tab.activo{background:var(--blue-glow);border-color:var(--blue-dim);color:var(--text-primary);font-weight:700}
+#cuadranteScreen .cq-panel{display:none}#cuadranteScreen .cq-panel.activo{display:block}
+#cuadranteScreen .cq-barra{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin:0 0 14px}
+#cuadranteScreen .cq-campo{display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--text-secondary)}
+#cuadranteScreen .cq-campo input,#cuadranteScreen .cq-campo select{min-height:40px}
+#cuadranteScreen .cq-fila{display:flex;gap:8px;align-items:center;margin:0 0 8px;flex-wrap:wrap}
+#cuadranteScreen .cq-fila input[type=text],#cuadranteScreen .cq-fila select{flex:1 1 150px;min-width:0}
+#cuadranteScreen .cq-fila input[type=date]{flex:0 1 150px}
+#cuadranteScreen .cq-num{width:24px;text-align:center;color:var(--text-muted)}
+#cuadranteScreen .cq-etq{flex:0 0 130px;color:var(--text-secondary);font-size:.85rem}
+#cuadranteScreen .cq-chk{display:flex;align-items:center;gap:6px;font-size:.8rem;color:var(--text-secondary);white-space:nowrap}
+#cuadranteScreen .cq-mini{min-width:40px;min-height:40px;background:transparent;border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text-secondary);cursor:pointer}
+#cuadranteScreen .cq-sub{margin:20px 0 8px;font-family:var(--font-display);letter-spacing:.05em;text-transform:uppercase;font-size:.95rem;color:var(--text-primary)}
+#cuadranteScreen .cq-nota,#cuadranteScreen .cq-vacio{font-size:.82rem;color:var(--text-muted);margin:6px 0 12px}
+#cuadranteScreen .cq-mensaje{margin:0 0 12px;padding:0}
+#cuadranteScreen .cq-mensaje.cq-ok,#cuadranteScreen .cq-mensaje.cq-error{padding:10px 12px;border-radius:var(--radius-md);font-size:.85rem;border:1px solid}
+#cuadranteScreen .cq-mensaje.cq-ok{background:var(--green-dim);border-color:var(--green)}
+#cuadranteScreen .cq-mensaje.cq-error{background:var(--red-dim);border-color:var(--red)}
+#cuadranteScreen .cq-scroll{overflow-x:visible;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg-card);margin-bottom:10px}
+#cuadranteScreen .cq-tabla{border-collapse:collapse;width:100%;table-layout:fixed;font-size:.7rem}
+#cuadranteScreen .cq-tabla th,#cuadranteScreen .cq-tabla td{border:1px solid var(--border);padding:3px 0;text-align:center;min-width:0;overflow:hidden}
+#cuadranteScreen .cq-tabla thead th small{display:block;font-weight:400;opacity:.7}
+#cuadranteScreen .cq-tabla .cq-nombre{position:sticky;left:0;z-index:1;background:var(--bg-surface);text-align:left;padding:4px 6px;width:64px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.62rem}
+#cuadranteScreen .cq-resumen td,#cuadranteScreen .cq-resumen th{min-width:52px}
+#cuadranteScreen .cq-resumen{table-layout:auto}
+#cuadranteScreen .cq-tabla thead th small{font-size:.55rem}
+#cuadranteScreen .cq-tabla:not(.cq-resumen) th,#cuadranteScreen .cq-tabla:not(.cq-resumen) td{font-size:.6rem;padding:3px 0;min-width:0;width:auto}
+#cuadranteScreen .cq-tabla:not(.cq-resumen) .cq-nombre{width:96px;min-width:96px;padding:3px 4px;text-align:left;white-space:normal;overflow:visible;text-overflow:clip;word-break:break-word;line-height:1.15;font-size:.62rem}
+#cuadranteScreen .cq-izq{text-align:left!important;font-size:.7rem}
+#cuadranteScreen .cq-fin{background-color:rgba(255,255,255,.04)}
+#cuadranteScreen .cq-fest{color:var(--red)}
+#cuadranteScreen .cq-c.cq-M{background:rgba(59,130,246,.18)}
+#cuadranteScreen .cq-c.cq-T{background:rgba(245,158,11,.30)}
+#cuadranteScreen .cq-c.cq-L{color:var(--text-muted)}
+#cuadranteScreen .cq-c.cq-FS,#cuadranteScreen .cq-c.cq-FD{background:rgba(168,85,247,.30)}
+#cuadranteScreen .cq-c.cq-FT{background:rgba(239,68,68,.38);font-weight:700}
+#cuadranteScreen .cq-c.cq-FL{background:rgba(34,197,94,.25)}
+#cuadranteScreen .cq-c.cq-edit{cursor:pointer}#cuadranteScreen .cq-c.cq-edit:hover{outline:2px solid var(--blue);outline-offset:-2px}
+.cq-aviso{margin:0 0 14px;padding:10px 14px;border:1px solid var(--blue-dim);background:var(--blue-glow);border-radius:var(--radius-md);font-size:.85rem;line-height:1.5}
+#cuadranteScreen .cq-neg{color:var(--red)}#cuadranteScreen .cq-pos{color:var(--green)}
+#cuadranteScreen .cq-leyenda{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:.75rem;color:var(--text-secondary);margin:6px 0 4px}
+#cuadranteScreen .cq-leyenda b{display:inline-block;min-width:26px;padding:1px 4px;text-align:center;border-radius:4px;font-size:.7rem}
+`;
+
+function _cqMontar() {
+  if (_cq.montado && document.getElementById('cuadranteScreen')) return;
+  if (!document.getElementById('cqStyles')) { const st = document.createElement('style'); st.id = 'cqStyles'; st.textContent = CQ_CSS; document.head.appendChild(st); }
+  if (!document.getElementById('cuadranteScreen')) {
+    const scr = document.createElement('div'); scr.className = 'screen'; scr.id = 'cuadranteScreen';
+    scr.innerHTML = `
+      <h1 class="title">📆 Cuadrante</h1>
+      <div class="cq-tabs">
+        <button type="button" class="cq-tab activo" data-tab="consulta">Consultar</button>
+        <button type="button" class="cq-tab cq-solo-admin" data-tab="generar">Generar año</button>
+        <button type="button" class="cq-tab cq-solo-admin" data-tab="config">Configuración</button>
+      </div>
+      <div id="cqMensaje" class="cq-mensaje"></div>
+      <div class="cq-panel activo" data-panel="consulta">
+        <div class="cq-barra">
+          <label class="cq-campo">Año<select id="cqAnio"></select></label>
+          <label class="cq-campo">Mes<select id="cqMes">${CQ_MESES.map((m, i) => `<option value="${i}">${m}</option>`).join('')}</select></label>
+          <label class="cq-campo">Operario<select id="cqFiltro"><option value="">Todos</option></select></label>
+          <button type="button" class="button cq-solo-admin" data-act="exportar">⬇ Excel</button>
+          <button type="button" class="button cq-solo-admin" id="cqBtnPub" data-act="publicar"></button>
+        </div>
+        <div id="cqVista"></div><div id="cqResumen"></div><div id="cqHorasAnio"></div>
+      </div>
+      <div class="cq-panel cq-solo-admin" data-panel="generar">
+        <div class="cq-barra"><label class="cq-campo">Año a generar<input type="number" id="cqGenAnio" min="2000" max="2100"></label></div>
+        <h4 class="cq-sub">Festivos nacionales y autonómicos del año</h4>
+        <div class="cq-barra"><button type="button" class="button" data-act="fest-proponer">Proponer festivos</button><button type="button" class="button" data-act="fest-add">+ Añadir festivo</button></div>
+        <div id="cqFestivos"></div>
+        <h4 class="cq-sub">Festivos locales de cada operario</h4>
+        <div id="cqLocales"></div>
+        <h4 class="cq-sub">Festivos nacionales que NO aplican a cada operario</h4><p class="cq-nota">Para trabajadores de otra comunidad. Sus festivos propios añádelos arriba como locales.</p><div id="cqExcluidos"></div>
+        <h4 class="cq-sub">Horas del año</h4>
+        <div class="cq-barra" id="cqHoras"></div>
+        <div class="cq-barra"><button type="button" class="button" data-act="generar">⚙️ Generar año</button></div>
+        <div id="cqBorrador"></div>
+      </div>
+      <div class="cq-panel cq-solo-admin" data-panel="config"><div id="cqConfig"></div></div>
+      <button type="button" class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>`;
+    scr.addEventListener('click', _cqClick); scr.addEventListener('change', _cqCambio); scr.addEventListener('input', _cqCambio);
+    const ref = document.getElementById('menuScreen'); (ref && ref.parentNode ? ref.parentNode : document.body).appendChild(scr);
+  }
+  if (!document.getElementById('menuCuadranteBtn')) {
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'button back-button'; btn.id = 'menuCuadranteBtn'; btn.textContent = '📆 Cuadrante';
+    btn.addEventListener('click', () => showScreen('cuadranteScreen'));
+    const ref = document.getElementById('menuCentroOperativoBtn'), menu = document.getElementById('menuScreen');
+    if (ref) ref.insertAdjacentElement('beforebegin', btn); else if (menu) menu.appendChild(btn);
+  }
+  _cq.montado = true;
+}
+(function _cqIniciar() {
+  const arrancar = () => { try { _cqMontar(); } catch (e) { console.warn('Cuadrante: no se pudo montar', e); } };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
+})();
