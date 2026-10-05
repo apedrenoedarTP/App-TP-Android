@@ -630,32 +630,117 @@ body::before {
   box-shadow: var(--shadow-md);
 }
 
-/* ── Notification popup ────────────────────────────────────── */
+/* ── Ventana emergente (popup) ─────────────────────────────── */
+/* .notification-popup = capa con fondo oscuro · .np-dialog = la ventana */
 .notification-popup {
   position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  inset: 0;
+  z-index: 1001;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.65);
+  animation: npFade 160ms ease-out;
+}
+
+.np-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 860px;
+  max-height: 88vh;
+  max-height: 88dvh;
   background: var(--bg-card);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
-  padding: 32px 36px;
-  z-index: 1001;
-  display: none;
-  max-height: 88vh;
-  overflow-y: auto;
-  width: calc(100% - 32px);
-  max-width: 860px;
   box-shadow: var(--shadow-lg);
-  animation: popupIn 240ms cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+  animation: npIn 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-@keyframes popupIn {
-  from { opacity: 0; transform: translate(-50%, calc(-50% + 16px)) scale(0.97); }
-  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+/* Cabecera fija: título + contador + botón X siempre visible */
+.np-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px 12px 24px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
 }
 
-.notification-popup h3 {
+.np-header h3 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.np-count {
+  flex: 0 0 auto;
+  min-width: 26px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--blue-glow);
+  border: 1px solid var(--blue-dim);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.notification-popup .np-close {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 1.7rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+.notification-popup .np-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-light);
+}
+.notification-popup .np-close:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* Cuerpo: es lo único que se desplaza */
+.np-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 20px 24px 24px;
+}
+
+.np-body::-webkit-scrollbar { width: 6px; }
+.np-body::-webkit-scrollbar-track { background: transparent; }
+.np-body::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 4px; }
+
+/* Encabezados internos (mismo aspecto que antes) */
+.np-body h3 {
   font-family: var(--font-display);
   font-size: 1.1rem;
   font-weight: 700;
@@ -667,30 +752,39 @@ body::before {
   border-bottom: 1px solid var(--border);
 }
 
-.notification-popup button {
-  margin-top: 12px;
-}
-
 .notification-popup .edit-delete-buttons { justify-content: flex-start; }
 
-#popupContent {
-  max-height: calc(85vh - 140px);
-  overflow-y: auto;
-  margin-bottom: 8px;
-  padding-right: 4px;
+/* Con una ventana abierta, la página de fondo no se desplaza */
+body:has(.notification-popup) { overflow: hidden; }
+
+@keyframes npFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes npIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes npUp {
+  from { opacity: 0; transform: translateY(48px); }
+  to   { opacity: 1; transform: none; }
 }
 
-#popupContent::-webkit-scrollbar { width: 4px; }
-#popupContent::-webkit-scrollbar-track { background: transparent; }
-#popupContent::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 4px; }
+/* Móvil: hoja a casi pantalla completa que sube desde abajo */
+@media (max-width: 600px) {
+  .notification-popup { padding: 0; align-items: flex-end; }
+  .np-dialog {
+    max-width: none;
+    max-height: 94vh;
+    max-height: 94dvh;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    border-bottom: 0;
+    animation: npUp 260ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .np-header { padding: 10px 10px 10px 18px; }
+  .np-header h3 { font-size: 1.05rem; }
+  .np-body { padding: 16px 14px calc(20px + env(safe-area-inset-bottom, 0px)); }
+}
 
-/* Backdrop behind popup */
-.notification-popup::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.6);
-  z-index: -1;
+@media (prefers-reduced-motion: reduce) {
+  .notification-popup, .np-dialog { animation: none; }
 }
 
 /* ── Floating notification icons ──────────────────────────── */
@@ -1073,7 +1167,6 @@ body::before {
   .menu-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
   .menu-btn  { padding: 16px 8px; min-height: 80px; font-size: 0.82rem; }
   .form-container { padding: 18px; }
-  .notification-popup { padding: 20px; }
   .title { font-size: 1.7rem; }
   .photo-controls { flex-direction: column; }
 }
