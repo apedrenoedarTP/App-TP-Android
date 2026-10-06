@@ -90,8 +90,6 @@ const firebaseConfig = {
 const LS_KEY_APP     = 'edarData';
 const LS_KEY_EQUIPOS = 'equiposDb';
 
-const ADMIN_PIN = '2378';
-
 if (!firebase.apps.length) {
   firebase.initializeApp(firebaseConfig);
 }
@@ -483,8 +481,12 @@ function equipoTieneStockAgotado(equipo) {
 }
 
 // Pide el PIN al usuario y devuelve true si es correcto
-function verificarPin() {
-  return prompt('Por favor ingrese el código de administrador:') === ADMIN_PIN;
+async function verificarPin() {
+  try {
+    const u = auth.currentUser; if (!u) return false;
+    const s = await realDb.ref('usuarios/' + u.uid + '/rol').once('value');
+    return s.val() === 'admin';
+  } catch (e) { return false; }
 }
 
 
@@ -1755,8 +1757,8 @@ async function showScreen(screenId) {
 
 window.showScreen = showScreen;
 
-function authenticateAdmin() {
-  if (verificarPin()) {
+async function authenticateAdmin() {
+  if (await verificarPin()) {
     showScreen('adminScreen');
   } else {
     alert('Código incorrecto. Acceso denegado.');
@@ -1765,8 +1767,8 @@ function authenticateAdmin() {
 }
 
 // Pide PIN y navega a la pantalla indicada si es correcto
-function _autenticarYMostrar(screenId) {
-  if (verificarPin()) {
+async function _autenticarYMostrar(screenId) {
+  if (await verificarPin()) {
     showScreen(screenId);
   } else {
     alert('Código incorrecto. Acceso denegado.');
@@ -2726,7 +2728,7 @@ async function agregarMantenimientoPeriodico() {
     await saveToLocalStorage();
 
     ['fechaMantenimiento', 'operarioMantenimiento', 'equipoPeriodicidad', 'accionMantenimiento', 'periodicidadDias']
-      .forEach(id => { document.getElementById(id).value = ''; });
+      .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
     if (tipoEl) tipoEl.value = 'preventivo';
 
     actualizarListaMantenimientos();
@@ -3319,7 +3321,7 @@ async function guardarEquipo() {
     guardarEquiposDb();
 
     ['equiposFamilia', 'equiposZona', 'equiposEquipo', 'equiposItem', 'equiposRecambio', 'equiposCantidad']
-      .forEach(id => { document.getElementById(id).value = ''; });
+      .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
 
     actualizarListaEquipos();
     actualizarDatalistEquipos();
@@ -4272,7 +4274,7 @@ async function seleccionarInstalacion(id, meta) {
 
 async function crearInstalacion() {
   // Solo admin puede crear instalaciones
-  if (!verificarPin()) { alert('Código de administrador incorrecto'); return; }
+  if (!(await verificarPin())) { alert('Solo los administradores pueden crear instalaciones'); return; }
 
   const input  = document.getElementById('nuevaInstalacionNombre');
   const nombre = (input ? input.value : '').trim();
@@ -4437,7 +4439,7 @@ async function _obtenerNotificacionesUsuario() {
   const snap = await realDb.ref('notificaciones').once('value');
   const data = snap.val() || {};
   return Object.entries(data)
-    .filter(([id, n]) => _notifEsParaMi(n, uid) && !(n.eliminadoPor && n.eliminadoPor[uid]))
+    .filter(([id, n]) => _notifEsParaMi(n, uid) && !(n.eliminadoPor && n.eliminadoPor[uid]) && (!n.programada || (n.fecha || '') <= new Date().toISOString()))
     .map(([id, n]) => ({ id, ...n }))
     .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
 }
@@ -4573,7 +4575,17 @@ async function cargarDestinatariosNotifAdmin() {
   await _cargarOperariosCheckboxes('notifAdminDestinatarios', []);
 }
 
+function _notifCampoProgramada() {
+  let el = document.getElementById('notifAdminProgramada');
+  if (el) return el;
+  const m = document.getElementById('notifAdminMensaje'); if (!m) return null;
+  const w = document.createElement('div'); w.style.margin = '8px 0';
+  w.innerHTML = '<label style="font-size:0.85rem">⏰ Publicar el día/hora (vacío = enviar ahora)<br><input type="datetime-local" id="notifAdminProgramada" style="margin-top:4px"></label>';
+  m.insertAdjacentElement('afterend', w);
+  return document.getElementById('notifAdminProgramada');
+}
 async function enviarNotificacionAdmin() {
+  const progEl = _notifCampoProgramada();
   const mensajeEl = document.getElementById('notifAdminMensaje');
   const todosEl   = document.getElementById('notifAdminTodos');
   const mensaje   = (mensajeEl ? mensajeEl.value : '').trim();
@@ -4588,12 +4600,17 @@ async function enviarNotificacionAdmin() {
   }
 
   try {
+    const prog = progEl && progEl.value ? new Date(progEl.value) : null;
+    if (prog && isNaN(prog)) { alert('La fecha programada no es válida'); return; }
+    const esProg = !!prog && prog.getTime() > Date.now();
     await realDb.ref('notificaciones').push({
       mensaje,
-      fecha: new Date().toISOString(),
+      fecha: esProg ? prog.toISOString() : new Date().toISOString(),
+      programada: esProg,
       autor: localStorage.getItem('usuarioNombre') || 'Administración',
       destinatarios
     });
+    if (progEl) progEl.value = '';
     if (mensajeEl) mensajeEl.value = '';
     if (todosEl) todosEl.checked = false;
     document.querySelectorAll('#notifAdminDestinatarios input[type="checkbox"]').forEach(c => c.checked = false);
@@ -4605,6 +4622,7 @@ async function enviarNotificacionAdmin() {
 }
 
 async function cargarNotificacionesAdmin() {
+  _notifCampoProgramada();
   const contenedor = document.getElementById('notifAdminLista');
   if (!contenedor) return;
   contenedor.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem">Cargando...</p>';
@@ -4622,7 +4640,7 @@ async function cargarNotificacionesAdmin() {
       const leidas = Object.keys(n.leidoPor || {}).length;
       return `
         <div style="padding:8px 0;border-bottom:1px solid var(--border)">
-          <p style="font-size:0.78rem;color:var(--text-muted);margin:0">${_formatFechaNotif(n.fecha)} · ${dest} · ${leidas} leída(s)</p>
+          <p style="font-size:0.78rem;color:var(--text-muted);margin:0">${n.programada && (n.fecha || '') > new Date().toISOString() ? '⏰ Programada para ' : ''}${_formatFechaNotif(n.fecha)} · ${dest} · ${leidas} leída(s)</p>
           <p style="margin:4px 0">${n.mensaje}</p>
           <button class="button back-button" style="font-size:0.75rem;padding:4px 10px;color:var(--red)" onclick="eliminarNotificacionGlobal('${id}')">🗑️ Eliminar para todos</button>
         </div>`;
