@@ -474,10 +474,9 @@ function crearExcelBlob(filas, nombreHoja) {
 // Verifica si un equipo tiene algún recambio sin stock
 function equipoTieneStockAgotado(equipo) {
   if (!equipo) return false;
-  if (equipo.cantidad === 0) return true;
-  return equipo.recambios &&
-    Array.isArray(equipo.recambios) &&
-    equipo.recambios.some(r => r.cantidad === 0);
+  const cero = v => v !== null && v !== undefined && v !== '' && Number(v) === 0;
+  if (cero(equipo.cantidad)) return true;
+  return Array.isArray(equipo.recambios) && equipo.recambios.some(r => r && cero(r.cantidad));
 }
 
 // Pide el PIN al usuario y devuelve true si es correcto
@@ -1188,9 +1187,7 @@ function showPendingWorkOrders() {
   }
 
   pendingOrders.forEach(order => {
-    const photoHtml = order.photo
-      ? `<div class="work-order-photos"><img src="${order.photo}" class="work-order-photo" onclick="showPhotoModal('${order.photo}')" alt="Foto del parte de trabajo"></div>`
-      : '';
+    const photoHtml = _fotoHtml(order);
     const div = document.createElement('div');
     div.className = 'pending-record overdue';
     div.dataset.id = order.id;
@@ -1561,9 +1558,7 @@ function _aplicarFiltroPendientesAverias() {
 }
 
 function _crearItemPendienteAveria(order) {
-  const photoHtml = order.photo
-    ? `<div class="work-order-photos"><img src="${order.photo}" class="work-order-photo" onclick="showPhotoModal('${order.photo}')" alt="Foto"></div>`
-    : '';
+  const photoHtml = _fotoHtml(order);
   const div = document.createElement('div');
   div.className = 'pending-record overdue';
   div.dataset.id = order.id;
@@ -1654,9 +1649,7 @@ function _aplicarFiltroPendientesTareas() {
 }
 
 function _crearItemPendienteTarea(order) {
-  const photoHtml = order.photo
-    ? `<div class="work-order-photos"><img src="${order.photo}" class="work-order-photo" onclick="showPhotoModal('${order.photo}')" alt="Foto"></div>`
-    : '';
+  const photoHtml = _fotoHtml(order);
   const div = document.createElement('div');
   div.className = 'pending-record overdue';
   div.dataset.id = order.id;
@@ -2369,7 +2362,10 @@ async function createWorkOrder() {
     creadoPorEmail:   _sesionAutor().email
   };
   
-  if (photoData && photoData.trim() !== '') workOrder.photo = photoData;
+  if (photoData && photoData.trim() !== '') {
+    try { workOrder.fotoId = await _guardarFoto(photoData); }
+    catch (e) { alert('No se pudo guardar la foto: ' + e.message); return; }
+  }
 
   const dbKey   = tipo === 'averia' ? 'workOrdersAverias' : 'workOrdersTareas';
   const fbRef   = tipo === 'averia' ? `instalaciones/${INST()}/workOrdersAverias` : `instalaciones/${INST()}/workOrdersTareas`;
@@ -3406,7 +3402,6 @@ async function guardarEdicionEquipo(index) {
     equipos[index] = { familia: familia, zona: zona, equipo, modelo, recambios };
     _equiposNav = { paso: 'equipo', familia: familia, zona: zona }; // sigue al equipo aunque cambie de familia o zona
     window.equiposDb.equiposGuardados = equipos;
-    await realDb.ref(`instalaciones/${INST()}/stock`).set(equipos);
     await realDb.ref(`instalaciones/${INST()}/stock`).set(equipos);
     guardarEquiposDb();
     actualizarListaEquipos();
@@ -4760,6 +4755,84 @@ window.eliminarNotificacionGlobal      = eliminarNotificacionGlobal;
    15. FOTO
 ============================================================================= */
 
+const LIMITE_FOTOS_MB = 300; // aviso al admin al superar este espacio (el gratuito es 1024 MB)
+const _fotoCache = {};
+
+function _comprimirImagen(src, max = 1280, q = 0.65) {
+  return new Promise((ok, ko) => {
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      ok(c.toDataURL('image/jpeg', q));
+    };
+    img.onerror = () => ko(new Error('No se pudo leer la imagen'));
+    img.src = src;
+  });
+}
+
+async function _guardarFoto(data) {
+  const id = 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const base = `instalaciones/${INST()}`;
+  await realDb.ref(`${base}/fotos/${id}`).set(data);
+  await realDb.ref(`${base}/fotosIdx/${id}`).set({ t: new Date().toISOString(), b: data.length });
+  return id;
+}
+
+async function verFotoParte(id) {
+  try {
+    if (!_fotoCache[id]) {
+      const s = await realDb.ref(`instalaciones/${INST()}/fotos/${id}`).once('value');
+      _fotoCache[id] = s.val();
+    }
+    if (!_fotoCache[id]) { alert('La foto ya no está disponible (se eliminó por antigüedad).'); return; }
+    showPhotoModal(_fotoCache[id]);
+  } catch (e) { alert('No se pudo cargar la foto: ' + e.message); }
+}
+
+function _fotoHtml(order) {
+  if (order.fotoId) return `<div class="work-order-photos"><button type="button" class="button" onclick="verFotoParte('${order.fotoId}')">📷 Ver foto</button></div>`;
+  if (order.photo) return `<div class="work-order-photos"><img src="${order.photo}" class="work-order-photo" onclick="showPhotoModal(this.src)" alt="Foto"></div>`;
+  return '';
+}
+
+async function _fotosMantenimiento() {
+  try {
+    if (INST() === 'default' || !(await verificarPin())) return;
+    const base = `instalaciones/${INST()}`;
+    const listas = [['workOrdersAverias', 'workOrdersAverias'], ['workOrdersTareas', 'workOrdersTareas'], ['workOrders', 'workOrders']];
+    const pesadas = listas.reduce((n, [, k]) => n + (db[k] || []).filter(o => o && o.photo).length, 0);
+    if (pesadas && confirm(`Hay ${pesadas} foto(s) antiguas sin optimizar. ¿Optimizarlas ahora? Reduce el espacio y los datos que descargan los móviles.`)) {
+      for (const [nodo, k] of listas) {
+        const arr = (db[k] || []).filter(Boolean);
+        if (!arr.some(o => o.photo)) continue;
+        for (const o of arr) {
+          if (!o.photo) continue;
+          const small = await _comprimirImagen(o.photo);
+          o.fotoId = await _guardarFoto(small);
+          delete o.photo;
+        }
+        db[k] = arr;
+        await realDb.ref(`${base}/${nodo}`).set(arr);
+      }
+      localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
+      alert('Fotos antiguas optimizadas.');
+    }
+    const s = await realDb.ref(`${base}/fotosIdx`).once('value');
+    const idx = s.val() || {};
+    const mb = Object.values(idx).reduce((n, x) => n + (x.b || 0), 0) / 1048576;
+    if (mb > LIMITE_FOTOS_MB && confirm(`Las fotos ocupan ${mb.toFixed(0)} MB (objetivo: menos de ${LIMITE_FOTOS_MB} MB para no tener que pagar). ¿Borrar las de más de 12 meses?`)) {
+      const lim = new Date(); lim.setMonth(lim.getMonth() - 12);
+      const viejos = Object.keys(idx).filter(id => (idx[id].t || '') < lim.toISOString());
+      const upd = {}; viejos.forEach(id => { upd[`fotos/${id}`] = null; upd[`fotosIdx/${id}`] = null; });
+      if (viejos.length) await realDb.ref(base).update(upd);
+      alert(`Se borraron ${viejos.length} foto(s) antiguas.`);
+    }
+  } catch (e) { console.warn('Mantenimiento de fotos:', e); }
+}
+
 async function capturePhoto() {
   const photoInput = document.getElementById('photoInput');
   photoInput.capture = 'environment';
@@ -4772,9 +4845,12 @@ async function handlePhotoUpload(event) {
   try {
     const preview = document.getElementById('photoPreview');
     const reader = new FileReader();
-    reader.onload = function(e) {
-      preview.innerHTML = `<img src="${e.target.result}" alt="Preview">`;
-      preview.dataset.photoData = e.target.result;
+    reader.onload = async function(e) {
+      try {
+        const small = await _comprimirImagen(e.target.result);
+        preview.innerHTML = `<img src="${small}" alt="Preview">`;
+        preview.dataset.photoData = small;
+      } catch (err) { alert('Error al procesar la foto: ' + err.message); }
     };
     reader.readAsDataURL(file);
   } catch (error) {
@@ -4816,7 +4892,7 @@ function _registrarListenersFirebase() {
   // equiposDb
   realDb.ref(`instalaciones/${INST()}/equiposDb`).on('value', (snapshot) => {
     const val = snapshot.val();
-    if (val) { window.equiposDb = val; guardarEquiposDb(); }
+    if (val) { const _g = window.equiposDb && window.equiposDb.equiposGuardados; window.equiposDb = val; if (Array.isArray(_g)) window.equiposDb.equiposGuardados = _g; guardarEquiposDb(); }
   }, (e) => console.warn('Firebase equipos DB sync error:', e));
 
   // workOrders
@@ -4902,6 +4978,7 @@ function _registrarListenersFirebase() {
   });
 
   escucharMantenimientos();
+  setTimeout(_fotosMantenimiento, 4000);
 }
 
 
