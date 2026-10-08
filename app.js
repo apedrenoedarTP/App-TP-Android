@@ -1574,7 +1574,7 @@ function _crearItemPendienteAveria(order) {
     <button class="button" onclick="completeWorkOrder(${order.id}, this)">Marcar como completado</button>
     <div class="work-order-edit-form" id="edit-form-${order.id}">
       <div class="form-group"><label>Equipo:</label><input type="text" id="edit-equipo-${order.id}" value="${order.equipo || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
-      <div class="form-group"><label>Fecha programada:</label><input type="date" id="edit-fecha-${order.id}" value="${order.fechaProgramada || order.fecha || ''}"></div>
+      <div class="form-group"><label>Fecha programada:</label><input type="date" id="edit-fecha-${order.id}" value="${order.fechaProgramada || order.fecha || ''}" ${localStorage.getItem('usuarioRol') === 'admin' ? '' : 'disabled class="opacity-muted"'}></div>
             <div class="form-group"><label>Prioridad:</label>${prioridadSelectHtml(order.id, order.prioridad)}</div>
       <div class="form-group"><label>Descripción:</label><textarea id="edit-description-${order.id}">${order.descripcion || ''}</textarea></div>
       <div class="form-group"><label>Operario:</label><input type="text" id="edit-operator-${order.id}" value="${order.operario || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
@@ -1665,7 +1665,7 @@ function _crearItemPendienteTarea(order) {
     <button class="button" onclick="completeWorkOrder(${order.id}, this)">Marcar como completado</button>
     <div class="work-order-edit-form" id="edit-form-${order.id}">
       <div class="form-group"><label>Equipo:</label><input type="text" id="edit-equipo-${order.id}" value="${order.equipo || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
-      <div class="form-group"><label>Fecha programada:</label><input type="date" id="edit-fecha-${order.id}" value="${order.fechaProgramada || order.fecha || ''}"></div>
+      <div class="form-group"><label>Fecha programada:</label><input type="date" id="edit-fecha-${order.id}" value="${order.fechaProgramada || order.fecha || ''}" ${localStorage.getItem('usuarioRol') === 'admin' ? '' : 'disabled class="opacity-muted"'}></div>
             <div class="form-group"><label>Prioridad:</label>${prioridadSelectHtml(order.id, order.prioridad)}</div>
       <div class="form-group"><label>Descripción:</label><textarea id="edit-description-${order.id}">${order.descripcion || ''}</textarea></div>
       <div class="form-group"><label>Operario:</label><input type="text" id="edit-operator-${order.id}" value="${order.operario || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
@@ -2429,7 +2429,7 @@ async function saveWorkOrderChanges(orderId) {
 
   try {
     if (newEquipo) order.equipo = newEquipo;
-    if (newFecha) { order.fechaProgramada = newFecha; order.fecha = newFecha; }
+    if (newFecha && localStorage.getItem('usuarioRol') === 'admin') { order.fechaProgramada = newFecha; order.fecha = newFecha; }
     order.descripcion = newDescription;
     if (newOperator) order.operario = newOperator;
     const selAsig = document.getElementById(`edit-asignado-${orderId}`);
@@ -4534,7 +4534,7 @@ async function abrirNotificaciones() {
   } else {
     html += avisos.map(a => `
       <div class="notif-item notif-item--noleida">
-        <p class="notif-item__mensaje">Tienes ${a.tipo === 'mantenimiento' ? 'un mantenimiento' : a.tipo === 'averia' ? 'una avería' : 'un trabajo'} asignado en <strong>${a.instalacion}</strong>${a.titulo ? ' — ' + a.titulo : ''}</p>
+        <p class="notif-item__mensaje">Tienes ${a.tipo === 'mantenimiento' ? 'un mantenimiento' : a.tipo === 'averia' ? 'una avería' : 'un trabajo'} asignado en <strong>${a.instalacion}</strong>${a.titulo ? ' — ' + a.titulo : ''}${a.prioridad ? ' ' + prioridadBadgeHtml(a.prioridad) : ''}</p>
       </div>`).join('');
   }
 
@@ -4835,7 +4835,9 @@ async function _fotosMantenimiento() {
 
 async function capturePhoto() {
   const photoInput = document.getElementById('photoInput');
-  photoInput.capture = 'environment';
+  photoInput.removeAttribute('capture');
+  photoInput.accept = 'image/*';
+  photoInput.value = '';
   photoInput.click();
 }
 
