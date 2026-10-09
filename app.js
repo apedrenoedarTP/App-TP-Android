@@ -1475,9 +1475,9 @@ async function guardarAsignacionIcono(id) {
     await realDb.ref(`instalaciones/${INST()}/mantenimientosPeriodicos`).set(db.mantenimientosPeriodicos);
     await saveToLocalStorage();
     alert('✅ Asignación guardada.');
-    toggleAsigForm(id);
     const p = document.querySelector('.notification-popup');
-    if (p) p.remove();
+    const refrescar = { 'Preventivos de Equipos': showPreventivosEquipos, 'Trabajos Periódicos': showTareasProgramadas, 'Mantenimientos Pendientes': showPendingMaintenances }[p && p.dataset.popup];
+    if (refrescar) _conservarVista(refrescar); else toggleAsigForm(id);
     updateNotificationIcons();
   } catch(e) { alert('Error: ' + e.message); }
 }
