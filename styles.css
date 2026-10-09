@@ -26,7 +26,7 @@
 
   --text-primary:   #e8edf5;
   --text-secondary: #a0aec0;
-  --text-muted:     #4a5568;
+  --text-muted:     #8896ab;
 
   --font-body:    'Barlow', sans-serif;
   --font-display: 'Barlow Condensed', sans-serif;
@@ -64,7 +64,7 @@ body::before {
   content: '';
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.6);
   pointer-events: none;
   z-index: 0;
 }
@@ -144,7 +144,7 @@ body::before {
 
 .title-sub {
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   color: var(--blue);
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -183,7 +183,7 @@ body::before {
 
 .main-hero .subtitle {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   color: var(--text-muted);
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -358,9 +358,9 @@ body::before {
 .form-group label {
   display: block;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.78rem;
   font-weight: 500;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-secondary);
   margin-bottom: 6px;
@@ -451,7 +451,7 @@ body::before {
 }
 
 .pending-record p {
-  font-size: 0.88rem;
+  font-size: 0.95rem;
   color: var(--text-secondary);
   margin-bottom: 4px;
   line-height: 1.5;
@@ -460,7 +460,7 @@ body::before {
 .pending-record button {
   margin: 4px 4px 0 0;
   padding: 8px 16px;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   max-width: none;
   width: auto;
 }
@@ -504,7 +504,7 @@ body::before {
   flex: 0 0 auto;
   width: auto;
   padding: 8px 16px;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
 }
 
 /* ── Spare parts ───────────────────────────────────────────── */
@@ -522,7 +522,7 @@ body::before {
   gap: 10px;
   padding: 8px 0;
   border-bottom: 1px solid var(--border);
-  font-size: 0.88rem;
+  font-size: 0.95rem;
   color: var(--text-secondary);
 }
 
@@ -531,7 +531,7 @@ body::before {
 .spare-part-item input {
   flex: 1;
   padding: 6px 10px;
-  font-size: 0.88rem;
+  font-size: 0.95rem;
 }
 
 .add-spare-part-form {
@@ -544,7 +544,7 @@ body::before {
 
 .add-spare-part-form h4 {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-muted);
@@ -575,7 +575,7 @@ body::before {
 }
 
 .equipo-record p {
-  font-size: 0.88rem;
+  font-size: 0.95rem;
   color: var(--text-secondary);
   margin-bottom: 4px;
 }
@@ -609,7 +609,7 @@ body::before {
 }
 
 .stock-info p {
-  font-size: 0.85rem;
+  font-size: 0.92rem;
   color: var(--text-secondary);
 }
 
@@ -692,7 +692,7 @@ body::before {
   background: var(--blue-glow);
   border: 1px solid var(--blue-dim);
   color: var(--text-primary);
-  font-size: 0.8rem;
+  font-size: 0.88rem;
   font-weight: 700;
   text-align: center;
 }
@@ -909,7 +909,7 @@ body:has(.notification-popup) { overflow: hidden; }
   flex: 1;
   max-width: none;
   padding: 10px 14px;
-  font-size: 0.88rem;
+  font-size: 0.92rem;
   background: var(--bg-surface);
   color: var(--text-secondary);
   border: 1px solid var(--border);
@@ -999,7 +999,7 @@ body:has(.notification-popup) { overflow: hidden; }
 /* ── Equipment description ─────────────────────────────────── */
 .equipment-description {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.82rem;
   color: var(--text-muted);
   margin-top: 4px;
   letter-spacing: 0.02em;
@@ -1105,7 +1105,7 @@ body:has(.notification-popup) { overflow: hidden; }
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   font-family: var(--font-body);
-  font-size: 0.88rem;
+  font-size: 0.95rem;
   padding: 6px 10px;
   width: auto;
   min-width: 160px;
@@ -1143,7 +1143,7 @@ body:has(.notification-popup) { overflow: hidden; }
 .work-order-edit-form .button {
   width: auto;
   padding: 8px 16px;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   margin-right: 8px;
   margin-top: 4px;
 }
@@ -1208,7 +1208,7 @@ body:has(.notification-popup) { overflow: hidden; }
 .eq-familia-count {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   color: var(--text-secondary);
   font-weight: 400;
 }
@@ -1218,7 +1218,7 @@ body:has(.notification-popup) { overflow: hidden; }
 .eq-zona { margin-bottom: 8px; }
 .eq-zona-header {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.82rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--amber);
@@ -1244,7 +1244,7 @@ body:has(.notification-popup) { overflow: hidden; }
 
 .eq-model-tag {
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: 0.78rem;
   color: var(--text-muted);
   background: var(--bg-surface);
   border: 1px solid var(--border);
@@ -1288,11 +1288,11 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   border: 1px solid var(--blue-dim);
   border-radius: var(--radius-sm);
   padding: 8px 12px;
-  font-size: 0.82rem;
+  font-size: 0.9rem;
 }
 .eq-historial-title {
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: 0.78rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--blue);
@@ -1308,7 +1308,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 .eq-historial-entry:last-child { border-bottom: none; }
 .eq-historial-fecha {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.82rem;
   color: var(--text-muted);
   flex-shrink: 0;
   min-width: 88px;
@@ -1351,7 +1351,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   color: var(--text-primary);
 }
 .inst-card__estado {
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   color: var(--text-muted);
 }
 .inst-card--activa .inst-card__estado { color: var(--green); }
@@ -1375,7 +1375,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.85rem;
+  font-size: 0.92rem;
   font-family: var(--font-body);
   color: var(--text-secondary);
   padding: 3px 0;
@@ -1402,7 +1402,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 }
 
 .asig-checkbox-clear {
-  font-size: 0.78rem;
+  font-size: 0.85rem;
   padding: 3px 8px;
   margin-bottom: 6px;
   background: var(--bg-surface);
@@ -1420,16 +1420,16 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 /* ── Botón compacto para tablas y paneles ──────────────────── */
 .button--sm {
   padding: 6px 12px;
-  font-size: 0.82rem;
+  font-size: 0.88rem;
   max-width: none;
   width: auto;
 }
 
 /* ── Utilidades JS — clases para sustituir estilos inline ──── */
-.txt-muted-sm   { font-size: 0.83rem; color: var(--text-muted); }
-.txt-secondary-sm { font-size: 0.83rem; color: var(--text-secondary); margin: 3px 0; }
-.txt-muted-xs   { font-size: 0.8rem; opacity: 0.6; }
-.opacity-muted  { opacity: 0.6; }
+.txt-muted-sm   { font-size: 0.92rem; color: var(--text-muted); }
+.txt-secondary-sm { font-size: 0.92rem; color: var(--text-secondary); margin: 3px 0; }
+.txt-muted-xs   { font-size: 0.88rem; opacity: 0.85; }
+.opacity-muted  { opacity: 0.85; }
 .panel-sec {
   margin-bottom: 10px;
   padding: 10px;
@@ -1439,11 +1439,11 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 .th-left {
   text-align: left;
   padding: 4px 8px;
-  font-size: 0.8rem;
+  font-size: 0.88rem;
   opacity: 0.7;
 }
-.td-cell    { padding: 4px 8px; font-size: 0.85rem; }
-.td-cell-sm { padding: 4px 8px; font-size: 0.82rem; }
+.td-cell    { padding: 4px 8px; font-size: 0.92rem; }
+.td-cell-sm { padding: 4px 8px; font-size: 0.9rem; }
 .tbl-full   { width: 100%; border-collapse: collapse; }
 
 /* ── Notificaciones ── */
@@ -1472,7 +1472,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   border-color: var(--red-dim);
   background: rgba(235,87,87,0.08);
 }
-.notif-item__fecha { font-size: 0.72rem; color: var(--text-muted); margin: 0 0 4px; }
+.notif-item__fecha { font-size: 0.82rem; color: var(--text-muted); margin: 0 0 4px; }
 .notif-item__mensaje { margin: 0 0 8px; font-size: 0.92rem; white-space: pre-wrap; }
 .notif-item__acciones { display: flex; justify-content: flex-end; }
 
@@ -1492,5 +1492,22 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   border: 1px solid var(--border);
   background: var(--bg-input, #1e1e1e);
   color: var(--text);
-  font-size: 0.82rem;
+  font-size: 0.9rem;
 }
+
+/* ===== MEJORA DE LECTURA (capa para textos escritos dentro de app.js) ===== */
+/* Letra pequeña en línea */
+[style*="font-size:0.7rem"], [style*="font-size:.7rem"], [style*="font-size:0.75rem"], [style*="font-size:0.78rem"] { font-size: 0.88rem !important; }
+[style*="font-size:0.8rem"], [style*="font-size:0.82rem"], [style*="font-size:0.83rem"], [style*="font-size:0.85rem"], [style*="font-size:.85rem"] { font-size: 0.93rem !important; }
+/* Textos con transparencia añadida en línea */
+[style*="opacity:0.7"], [style*="opacity: 0.7"], [style*="opacity:0.6"] { opacity: 0.92 !important; }
+/* Frases de ayuda de Compra y Cuadrante: más grandes y en recuadro */
+#compraScreen .cp-nota, #cuadranteScreen .cq-nota, #compraScreen .cp-vacio, #cuadranteScreen .cq-vacio {
+  font-size: 0.95rem !important; line-height: 1.5; color: var(--text-secondary) !important;
+  background: var(--bg-card); border-left: 4px solid var(--blue-dim);
+  padding: 10px 12px; border-radius: var(--radius-md);
+}
+/* Contraste del cuadrante y de la compra */
+#compraScreen .cp-txt small { font-size: 0.82rem; }
+#compraScreen .cp-chkl, #cuadranteScreen .cq-chk, #cuadranteScreen .cq-campo { font-size: 0.85rem; }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
