@@ -7083,3 +7083,38 @@ function _cqMontar() {
   const arrancar = () => { try { mount(); } catch (e) { console.warn('Compra: no se pudo montar', e); } };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
 })();
+
+/* ===== BARRA FIJA CON LA INSTALACIÓN ACTIVA (añadir al final de app.js) ===== */
+(function () {
+  const KEY = 'instalacionesNombres', pidiendo = {};
+  const nombres = () => { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } };
+  const guardar = (id, n) => { const m = nombres(); m[id] = n; localStorage.setItem(KEY, JSON.stringify(m)); };
+  function pintar() {
+    try {
+      const inst = localStorage.getItem('instalacionActiva');
+      const main = document.getElementById('mainScreen');
+      const enLogin = !!main && getComputedStyle(main).display !== 'none';
+      let b = document.getElementById('barraInstalacion');
+      if (!inst || inst === 'default' || enLogin) { if (b) b.style.display = 'none'; document.body.classList.remove('con-barra-inst'); return; }
+      if (!b) { b = document.createElement('div'); b.id = 'barraInstalacion'; document.body.appendChild(b); }
+      b.textContent = '🏭 ' + (nombres()[inst] || inst);
+      b.style.display = 'block'; document.body.classList.add('con-barra-inst');
+      if (!pidiendo[inst] && typeof auth !== 'undefined' && auth.currentUser) {
+        pidiendo[inst] = true;
+        realDb.ref(`instalaciones/${inst}/meta/nombre`).once('value')
+          .then(s => { if (s.val()) { guardar(inst, s.val()); pintar(); } }).catch(() => {});
+      }
+    } catch (e) { console.warn('Barra de instalación:', e); }
+  }
+  function iniciar() {
+    if (!document.getElementById('barraInstalacionCss')) {
+      const st = document.createElement('style'); st.id = 'barraInstalacionCss';
+      st.textContent = '#barraInstalacion{position:fixed;top:0;left:0;right:0;z-index:1002;display:none;padding:calc(5px + env(safe-area-inset-top,0px)) 12px 5px;background:var(--blue-dim);color:#fff;text-align:center;font-weight:700;font-size:.9rem;line-height:1.2;letter-spacing:.03em;box-shadow:var(--shadow-sm)}body.con-barra-inst{padding-top:calc(34px + env(safe-area-inset-top,0px))}body.con-barra-inst .notification-icons,body.con-barra-inst .stock-notification-icon{top:calc(40px + env(safe-area-inset-top,0px))}body.con-barra-inst .notification-bar{top:calc(28px + env(safe-area-inset-top,0px))}';
+      document.head.appendChild(st);
+    }
+    new MutationObserver(m => { if (m.some(x => x.target.classList && x.target.classList.contains('screen'))) pintar(); })
+      .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['style'] });
+    pintar(); setTimeout(pintar, 1500);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
+})();
