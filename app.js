@@ -6922,3 +6922,164 @@ function _cqMontar() {
   const arrancar = () => { try { _cqMontar(); } catch (e) { console.warn('Cuadrante: no se pudo montar', e); } };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
 })();
+
+/* ===== LISTA DE LA COMPRA + BUZÓN DE SUGERENCIAS (añadir al final de app.js) ===== */
+(function () {
+  const CSS = `
+#compraScreen .cp-tabs{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap}
+#compraScreen .cp-tab{padding:10px 16px;min-height:44px;background:var(--bg-card);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-md);cursor:pointer}
+#compraScreen .cp-tab.activo{background:var(--blue-glow);border-color:var(--blue-dim);color:var(--text-primary);font-weight:700}
+#compraScreen .cp-panel{display:none}#compraScreen .cp-panel.activo{display:block}
+#compraScreen .cp-add{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 14px}
+#compraScreen .cp-add input[type=text]{flex:1 1 150px;min-width:0;min-height:42px}
+#compraScreen .cp-add .cp-cant{flex:0 1 110px}
+#compraScreen .cp-chkl{display:flex;align-items:center;gap:6px;font-size:.82rem;color:var(--text-secondary);white-space:nowrap}
+#compraScreen .cp-cab{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:14px 0 8px;font-size:.95rem}
+#compraScreen .cp-item{display:flex;align-items:center;gap:10px;padding:10px;margin:0 0 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md)}
+#compraScreen .cp-item.cp-urg{border-left:4px solid var(--red)}
+#compraScreen .cp-item.cp-hecho{opacity:.6}
+#compraScreen .cp-txt{flex:1;min-width:0;line-height:1.3}
+#compraScreen .cp-txt small{display:block;color:var(--text-muted);font-size:.74rem}
+#compraScreen .cp-tag{background:var(--red);color:#fff;font-size:.65rem;padding:1px 6px;border-radius:8px;margin-left:6px;font-weight:700}
+#compraScreen .cp-btn{min-width:44px;min-height:44px;background:transparent;border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text-primary);cursor:pointer;font-size:1.1rem}
+#compraScreen .cp-vacio,#compraScreen .cp-nota{font-size:.82rem;color:var(--text-muted);margin:8px 0}
+#compraScreen textarea{width:100%;min-height:90px;box-sizing:border-box;margin:6px 0}
+#compraScreen .cp-msg{min-height:20px;font-size:.85rem;margin:0 0 8px}`;
+
+  const cp = { items: {}, sug: {}, ref: null, refS: null };
+  const esc = s => _cqEsc(String(s == null ? '' : s));
+  const admin = () => localStorage.getItem('usuarioRol') === 'admin';
+  const nombre = () => localStorage.getItem('usuarioNombre') || 'Usuario';
+  const uidAct = () => localStorage.getItem('usuarioUid');
+  const base = () => `instalaciones/${INST()}`;
+  const fmt = iso => (iso || '').slice(0, 10).split('-').reverse().join('/');
+  const el = id => document.getElementById(id);
+  function msg(t, ok) {
+    const m = el('cpMsg'); if (!m) return;
+    m.textContent = t; m.style.color = ok ? 'var(--green)' : 'var(--red)';
+    clearTimeout(msg._t); msg._t = setTimeout(() => { m.textContent = ''; }, 4000);
+  }
+
+  function renderLista() {
+    const host = el('cpLista'); if (!host) return;
+    const uid = uidAct();
+    const todos = Object.entries(cp.items).map(([id, v]) => ({ id, ...v }));
+    const pend = todos.filter(i => !i.comprado).sort((a, b) => (b.urgente ? 1 : 0) - (a.urgente ? 1 : 0) || (a.fecha || '').localeCompare(b.fecha || ''));
+    const comp = todos.filter(i => i.comprado).sort((a, b) => (b.compradoEn || '').localeCompare(a.compradoEn || '')).slice(0, 15);
+    const puedeBorrar = i => admin() || i.uid === uid;
+    const fila = (i, hecho) => `<div class="cp-item${i.urgente && !hecho ? ' cp-urg' : ''}${hecho ? ' cp-hecho' : ''}">
+      <button type="button" class="cp-btn" data-act="${hecho ? 'reponer' : 'comprado'}" data-id="${i.id}" title="${hecho ? 'Volver a pedir' : 'Marcar como comprado'}">${hecho ? '↩' : '☐'}</button>
+      <div class="cp-txt"><b>${esc(i.nombre)}</b>${i.cantidad ? ' · ' + esc(i.cantidad) : ''}${i.urgente && !hecho ? '<span class="cp-tag">URGENTE</span>' : ''}
+        <small>${hecho ? 'Comprado por ' + esc(i.compradoPor || '') + ' · ' + fmt(i.compradoEn) : 'Pedido por ' + esc(i.autor || '') + ' · ' + fmt(i.fecha)}</small></div>
+      ${puedeBorrar(i) ? `<button type="button" class="cp-btn" data-act="borrar" data-id="${i.id}" title="Eliminar">🗑</button>` : ''}</div>`;
+    host.innerHTML = `<div class="cp-cab"><b>Pendiente de comprar (${pend.length})</b>
+        <button type="button" class="button" data-act="compartir">📤 Compartir lista</button></div>
+      ${pend.length ? pend.map(i => fila(i, false)).join('') : '<p class="cp-vacio">No hay nada pendiente ✅</p>'}
+      ${comp.length ? `<div class="cp-cab"><b>Comprados recientemente</b>${admin() ? '<button type="button" class="button" data-act="vaciar">🧹 Vaciar comprados</button>' : ''}</div>${comp.map(i => fila(i, true)).join('')}` : ''}`;
+    const t = el('cpTabCompra'); if (t) t.textContent = `🛒 Compra${pend.length ? ' (' + pend.length + ')' : ''}`;
+  }
+
+  function renderSug() {
+    const host = el('cpSugLista'); if (!host) return;
+    const lista = Object.entries(cp.sug).map(([id, v]) => ({ id, ...v })).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+    host.innerHTML = `<h4>Sugerencias recibidas (${lista.filter(s => !s.revisada).length} nuevas)</h4>` + (lista.length ? lista.map(s => `
+      <div class="cp-item${s.revisada ? ' cp-hecho' : ''}"><div class="cp-txt"><b>${esc(s.tipo || 'Otro')}</b> · ${esc(s.texto)}
+        <small>${s.anonimo ? 'Anónima' : esc(s.autor || '')} · ${fmt(s.fecha)}${s.revisada ? ' · revisada' : ''}</small></div>
+        ${s.revisada ? '' : `<button type="button" class="cp-btn" data-act="sug-ok" data-id="${s.id}" title="Marcar como revisada">✓</button>`}
+        <button type="button" class="cp-btn" data-act="sug-del" data-id="${s.id}" title="Eliminar">🗑</button></div>`).join('') : '<p class="cp-vacio">Todavía no hay sugerencias.</p>');
+  }
+
+  function cambiarTab(tab) {
+    document.querySelectorAll('#compraScreen .cp-tab').forEach(b => b.classList.toggle('activo', b.dataset.tab === tab));
+    document.querySelectorAll('#compraScreen .cp-panel').forEach(p => p.classList.toggle('activo', p.dataset.panel === tab));
+  }
+
+  function abrir() {
+    mount(); cambiarTab('compra');
+    document.querySelectorAll('#compraScreen .cp-solo-admin').forEach(e => { e.style.display = admin() ? '' : 'none'; });
+    if (cp.ref) cp.ref.off();
+    cp.ref = realDb.ref(`${base()}/compra`);
+    cp.ref.on('value', s => { cp.items = s.val() || {}; renderLista(); }, e => msg('No se pudo cargar la lista: ' + e.message, false));
+    if (admin()) {
+      if (cp.refS) cp.refS.off();
+      cp.refS = realDb.ref(`sugerencias/${INST()}`);
+      cp.refS.on('value', s => { cp.sug = s.val() || {}; renderSug(); }, e => console.warn('Sugerencias:', e.message));
+    }
+  }
+
+  function textoLista() {
+    const pend = Object.values(cp.items).filter(i => !i.comprado).sort((a, b) => (b.urgente ? 1 : 0) - (a.urgente ? 1 : 0));
+    return '🛒 Lista de la compra\n' + pend.map(i => `- ${i.nombre}${i.cantidad ? ' (' + i.cantidad + ')' : ''}${i.urgente ? ' ⚠ URGENTE' : ''}`).join('\n');
+  }
+
+  async function click(ev) {
+    const t = ev.target.closest('[data-act],[data-tab]'); if (!t) return;
+    if (t.dataset.tab) return cambiarTab(t.dataset.tab);
+    const act = t.dataset.act, id = t.dataset.id, now = new Date().toISOString();
+    try {
+      if (act === 'add') {
+        const n = el('cpNombre').value.trim(); if (!n) return msg('Escribe qué hay que comprar.', false);
+        if (Object.values(cp.items).some(i => !i.comprado && String(i.nombre).toLowerCase() === n.toLowerCase())) return msg('Ya está en la lista.', false);
+        realDb.ref(`${base()}/compra`).push({ nombre: n, cantidad: el('cpCant').value.trim(), urgente: el('cpUrg').checked, autor: nombre(), uid: uidAct(), fecha: now, comprado: false }).catch(e => msg('Error al añadir: ' + e.message, false));
+        el('cpNombre').value = ''; el('cpCant').value = ''; el('cpUrg').checked = false; msg('Añadido a la lista.', true);
+      } else if (act === 'comprado') {
+        await realDb.ref(`${base()}/compra/${id}`).update({ comprado: true, compradoPor: nombre(), compradoEn: now });
+      } else if (act === 'reponer') {
+        await realDb.ref(`${base()}/compra/${id}`).update({ comprado: false, compradoPor: null, compradoEn: null, fecha: now });
+      } else if (act === 'borrar') {
+        if (confirm('¿Eliminar este artículo de la lista?')) await realDb.ref(`${base()}/compra/${id}`).remove();
+      } else if (act === 'vaciar') {
+        const upd = {}; Object.entries(cp.items).forEach(([k, v]) => { if (v.comprado) upd[k] = null; });
+        if (Object.keys(upd).length && confirm('¿Borrar todos los artículos ya comprados?')) await realDb.ref(`${base()}/compra`).update(upd);
+      } else if (act === 'compartir') {
+        const txt = textoLista();
+        if (navigator.share) await navigator.share({ text: txt }); else { await navigator.clipboard.writeText(txt); msg('Lista copiada al portapapeles.', true); }
+      } else if (act === 'sugerir') {
+        const tx = el('cpSugTexto').value.trim(); if (tx.length < 5) return msg('Escribe tu sugerencia.', false);
+        const anon = el('cpSugAnon').checked;
+        await realDb.ref(`sugerencias/${INST()}`).push({ texto: tx.slice(0, 1000), tipo: el('cpSugTipo').value, anonimo: anon, autor: anon ? null : nombre(), uid: anon ? null : uidAct(), fecha: now, revisada: false });
+        el('cpSugTexto').value = ''; msg('¡Gracias! Tu sugerencia ha sido enviada a administración.', true);
+      } else if (act === 'sug-ok') {
+        await realDb.ref(`sugerencias/${INST()}/${id}`).update({ revisada: true });
+      } else if (act === 'sug-del') {
+        if (confirm('¿Eliminar esta sugerencia?')) await realDb.ref(`sugerencias/${INST()}/${id}`).remove();
+      }
+    } catch (e) { if (e && e.name !== 'AbortError') msg('Error: ' + e.message, false); }
+  }
+
+  function mount() {
+    if (!el('cpStyles')) { const st = document.createElement('style'); st.id = 'cpStyles'; st.textContent = CSS; document.head.appendChild(st); }
+    if (!el('compraScreen')) {
+      const scr = document.createElement('div'); scr.className = 'screen'; scr.id = 'compraScreen';
+      scr.innerHTML = `<h1 class="title">🛒 Compra y sugerencias</h1>
+        <div class="cp-tabs"><button type="button" class="cp-tab activo" id="cpTabCompra" data-tab="compra">🛒 Compra</button><button type="button" class="cp-tab" data-tab="sug">💡 Sugerencias</button></div>
+        <div id="cpMsg" class="cp-msg"></div>
+        <div class="cp-panel activo" data-panel="compra">
+          <p class="cp-nota">Apunta aquí lo que falta. Cuando alguien vaya a la ferretería, abre la lista y marca lo que compra.</p>
+          <div class="cp-add"><input type="text" id="cpNombre" placeholder="¿Qué hay que comprar?" maxlength="80"><input type="text" id="cpCant" class="cp-cant" placeholder="Cantidad" maxlength="30">
+            <label class="cp-chkl"><input type="checkbox" id="cpUrg"> Urgente</label><button type="button" class="button" data-act="add">➕ Añadir</button></div>
+          <div id="cpLista"></div>
+        </div>
+        <div class="cp-panel" data-panel="sug">
+          <p class="cp-nota">Propón mejoras, ideas o material. Solo las ve administración. Para averías o avisos urgentes, usa un parte de trabajo.</p>
+          <select id="cpSugTipo"><option>Mejora</option><option>Material / compra</option><option>Seguridad</option><option>Organización</option><option>Otro</option></select>
+          <textarea id="cpSugTexto" maxlength="1000" placeholder="Escribe tu sugerencia..."></textarea>
+          <label class="cp-chkl"><input type="checkbox" id="cpSugAnon"> Enviar sin mi nombre</label>
+          <p><button type="button" class="button" data-act="sugerir">📨 Enviar sugerencia</button></p>
+          <div id="cpSugLista" class="cp-solo-admin"></div>
+        </div>
+        <button type="button" class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>`;
+      scr.addEventListener('click', click);
+      const ref = el('menuScreen'); (ref && ref.parentNode ? ref.parentNode : document.body).appendChild(scr);
+    }
+    if (!el('menuCompraBtn')) {
+      const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'button back-button'; btn.id = 'menuCompraBtn'; btn.textContent = '🛒 Compra y sugerencias';
+      btn.addEventListener('click', () => { showScreen('compraScreen'); abrir(); });
+      const ref = el('menuCuadranteBtn') || el('menuCentroOperativoBtn'), menu = el('menuScreen');
+      if (ref) ref.insertAdjacentElement('beforebegin', btn); else if (menu) menu.appendChild(btn);
+    }
+  }
+
+  const arrancar = () => { try { mount(); } catch (e) { console.warn('Compra: no se pudo montar', e); } };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
+})();
