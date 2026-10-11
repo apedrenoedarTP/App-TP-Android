@@ -6923,7 +6923,7 @@ function _cqMontar() {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
 })();
 
-/* ===== LISTA DE LA COMPRA + BUZÓN DE SUGERENCIAS (añadir al final de app.js) ===== */
+/* ===== LISTA DE LA COMPRA (con aprobación) + BUZÓN DE SUGERENCIAS (añadir al final de app.js) ===== */
 (function () {
   const CSS = `
 #compraScreen .cp-tabs{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap}
@@ -6933,16 +6933,18 @@ function _cqMontar() {
 #compraScreen .cp-add{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 14px}
 #compraScreen .cp-add input[type=text]{flex:1 1 150px;min-width:0;min-height:42px}
 #compraScreen .cp-add .cp-cant{flex:0 1 110px}
-#compraScreen .cp-chkl{display:flex;align-items:center;gap:6px;font-size:.82rem;color:var(--text-secondary);white-space:nowrap}
-#compraScreen .cp-cab{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:14px 0 8px;font-size:.95rem}
+#compraScreen .cp-chkl{display:flex;align-items:center;gap:6px;font-size:.85rem;color:var(--text-secondary);white-space:nowrap}
+#compraScreen .cp-cab{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:16px 0 8px;font-size:.95rem}
 #compraScreen .cp-item{display:flex;align-items:center;gap:10px;padding:10px;margin:0 0 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md)}
 #compraScreen .cp-item.cp-urg{border-left:4px solid var(--red)}
-#compraScreen .cp-item.cp-hecho{opacity:.6}
-#compraScreen .cp-txt{flex:1;min-width:0;line-height:1.3}
-#compraScreen .cp-txt small{display:block;color:var(--text-muted);font-size:.74rem}
-#compraScreen .cp-tag{background:var(--red);color:#fff;font-size:.65rem;padding:1px 6px;border-radius:8px;margin-left:6px;font-weight:700}
+#compraScreen .cp-item.cp-hecho{opacity:.75}
+#compraScreen .cp-txt{flex:1;min-width:0;line-height:1.35}
+#compraScreen .cp-txt small{display:block;color:var(--text-muted);font-size:.8rem}
+#compraScreen .cp-acc{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+#compraScreen .cp-tag{background:var(--red);color:#fff;font-size:.68rem;padding:2px 7px;border-radius:8px;margin-left:6px;font-weight:700;white-space:nowrap}
+#compraScreen .cp-tag.cp-ok{background:#2e7d32}#compraScreen .cp-tag.cp-warn{background:#b7791f}#compraScreen .cp-tag.cp-no{background:#c0392b}
 #compraScreen .cp-btn{min-width:44px;min-height:44px;background:transparent;border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text-primary);cursor:pointer;font-size:1.1rem}
-#compraScreen .cp-vacio,#compraScreen .cp-nota{font-size:.82rem;color:var(--text-muted);margin:8px 0}
+#compraScreen .cp-vacio,#compraScreen .cp-nota{font-size:.85rem;color:var(--text-muted);margin:8px 0}
 #compraScreen textarea{width:100%;min-height:90px;box-sizing:border-box;margin:6px 0}
 #compraScreen .cp-msg{min-height:20px;font-size:.85rem;margin:0 0 8px}`;
 
@@ -6950,33 +6952,57 @@ function _cqMontar() {
   const esc = s => _cqEsc(String(s == null ? '' : s));
   const admin = () => localStorage.getItem('usuarioRol') === 'admin';
   const nombre = () => localStorage.getItem('usuarioNombre') || 'Usuario';
-  const uidAct = () => localStorage.getItem('usuarioUid');
-  const base = () => `instalaciones/${INST()}`;
+  const uidAct = () => (auth.currentUser && auth.currentUser.uid) || localStorage.getItem('usuarioUid');
+  const base = () => `compra/${INST()}`;
   const fmt = iso => (iso || '').slice(0, 10).split('-').reverse().join('/');
   const el = id => document.getElementById(id);
+  const est = i => i.estado || (i.comprado ? 'comprada' : 'aceptada');
   function msg(t, ok) {
     const m = el('cpMsg'); if (!m) return;
     m.textContent = t; m.style.color = ok ? 'var(--green)' : 'var(--red)';
     clearTimeout(msg._t); msg._t = setTimeout(() => { m.textContent = ''; }, 4000);
   }
+  function avisar(item, texto) {
+    if (!item || !item.uid || item.uid === uidAct()) return;
+    realDb.ref('notificaciones').push({ mensaje: texto, fecha: new Date().toISOString(), autor: nombre(), destinatarios: [item.uid] }).catch(() => {});
+  }
+  const desc = (n, c) => `"${n}"${c ? ' (' + c + ')' : ''}`;
 
   function renderLista() {
     const host = el('cpLista'); if (!host) return;
-    const uid = uidAct();
-    const todos = Object.entries(cp.items).map(([id, v]) => ({ id, ...v }));
-    const pend = todos.filter(i => !i.comprado).sort((a, b) => (b.urgente ? 1 : 0) - (a.urgente ? 1 : 0) || (a.fecha || '').localeCompare(b.fecha || ''));
-    const comp = todos.filter(i => i.comprado).sort((a, b) => (b.compradoEn || '').localeCompare(a.compradoEn || '')).slice(0, 15);
-    const puedeBorrar = i => admin() || i.uid === uid;
-    const fila = (i, hecho) => `<div class="cp-item${i.urgente && !hecho ? ' cp-urg' : ''}${hecho ? ' cp-hecho' : ''}">
-      <button type="button" class="cp-btn" data-act="${hecho ? 'reponer' : 'comprado'}" data-id="${i.id}" title="${hecho ? 'Volver a pedir' : 'Marcar como comprado'}">${hecho ? '↩' : '☐'}</button>
-      <div class="cp-txt"><b>${esc(i.nombre)}</b>${i.cantidad ? ' · ' + esc(i.cantidad) : ''}${i.urgente && !hecho ? '<span class="cp-tag">URGENTE</span>' : ''}
-        <small>${hecho ? 'Comprado por ' + esc(i.compradoPor || '') + ' · ' + fmt(i.compradoEn) : 'Pedido por ' + esc(i.autor || '') + ' · ' + fmt(i.fecha)}</small></div>
-      ${puedeBorrar(i) ? `<button type="button" class="cp-btn" data-act="borrar" data-id="${i.id}" title="Eliminar">🗑</button>` : ''}</div>`;
-    host.innerHTML = `<div class="cp-cab"><b>Pendiente de comprar (${pend.length})</b>
-        <button type="button" class="button" data-act="compartir">📤 Compartir lista</button></div>
-      ${pend.length ? pend.map(i => fila(i, false)).join('') : '<p class="cp-vacio">No hay nada pendiente ✅</p>'}
-      ${comp.length ? `<div class="cp-cab"><b>Comprados recientemente</b>${admin() ? '<button type="button" class="button" data-act="vaciar">🧹 Vaciar comprados</button>' : ''}</div>${comp.map(i => fila(i, true)).join('')}` : ''}`;
-    const t = el('cpTabCompra'); if (t) t.textContent = `🛒 Compra${pend.length ? ' (' + pend.length + ')' : ''}`;
+    const uid = uidAct(), adm = admin();
+    const todos = Object.entries(cp.items).map(([id, v]) => ({ id, ...v, e: est(v) }));
+    const urg = (a, b) => (b.urgente ? 1 : 0) - (a.urgente ? 1 : 0) || (a.fecha || '').localeCompare(b.fecha || '');
+    const sol = todos.filter(i => i.e === 'solicitada').sort(urg);
+    const acep = todos.filter(i => i.e === 'aceptada').sort(urg);
+    const cierre = i => i.compradoEn || i.resueltoEn || i.fecha || '';
+    const rec = todos.filter(i => i.e === 'comprada' || i.e === 'rechazada').sort((a, b) => cierre(b).localeCompare(cierre(a))).slice(0, 15);
+    const mias = todos.filter(i => i.uid === uid && i.e !== 'aceptada').sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '')).slice(0, 10);
+    const chip = i => ({ solicitada: '<span class="cp-tag cp-warn">PENDIENTE DE REVISIÓN</span>', aceptada: '<span class="cp-tag cp-ok">ACEPTADA</span>', rechazada: '<span class="cp-tag cp-no">NO ACEPTADA</span>', comprada: '<span class="cp-tag cp-ok">COMPRADA</span>' }[i.e]);
+    const botones = i => {
+      const b = (act, ic, t) => `<button type="button" class="cp-btn" data-act="${act}" data-id="${i.id}" title="${t}">${ic}</button>`;
+      if (adm) {
+        if (i.e === 'solicitada') return b('aceptar', '✅', 'Aceptar') + b('aceptar-edit', '✏️', 'Aceptar con cambios') + b('rechazar', '❌', 'No aceptar') + b('borrar', '🗑', 'Eliminar');
+        if (i.e === 'aceptada') return b('comprado', '☐', 'Marcar como comprado') + b('editar', '✏️', 'Editar producto o cantidad') + b('borrar', '🗑', 'Eliminar');
+        if (i.e === 'comprada') return b('reponer', '↩', 'Volver a la lista') + b('borrar', '🗑', 'Eliminar');
+        return b('aceptar', '✅', 'Aceptar de todos modos') + b('borrar', '🗑', 'Eliminar');
+      }
+      return (i.uid === uid && (i.e === 'solicitada' || i.e === 'rechazada')) ? b('borrar', '🗑', i.e === 'solicitada' ? 'Cancelar mi petición' : 'Quitar') : '';
+    };
+    const fila = i => `<div class="cp-item${i.urgente && i.e !== 'comprada' ? ' cp-urg' : ''}${i.e === 'comprada' || i.e === 'rechazada' ? ' cp-hecho' : ''}">
+      <div class="cp-txt"><b>${esc(i.nombre)}</b>${i.cantidad ? ' · ' + esc(i.cantidad) : ''}${i.urgente && i.e !== 'comprada' ? '<span class="cp-tag">URGENTE</span>' : ''} ${chip(i)}
+        <small>Pedido por ${esc(i.autor || '')} · ${fmt(i.fecha)}${i.e === 'comprada' ? ' · comprado ' + fmt(i.compradoEn) : ''}</small>
+        ${i.original ? `<small>Ajustada por administración (pedido: ${esc(i.original.nombre)}${i.original.cantidad ? ' · ' + esc(i.original.cantidad) : ''})</small>` : ''}
+        ${i.e === 'rechazada' && i.motivo ? `<small>Motivo: ${esc(i.motivo)}</small>` : ''}</div>
+      <div class="cp-acc">${botones(i)}</div></div>`;
+    const seccion = (tit, lista, vacio) => `<div class="cp-cab"><b>${tit} (${lista.length})</b></div>${lista.length ? lista.map(fila).join('') : `<p class="cp-vacio">${vacio}</p>`}`;
+    host.innerHTML =
+      (adm ? seccion('🔔 Pendientes de aprobar', sol, 'No hay peticiones por revisar ✅') : '') +
+      `<div class="cp-cab"><b>🛒 Lista de la compra (${acep.length})</b><button type="button" class="button" data-act="compartir">📤 Compartir</button></div>` +
+      (acep.length ? acep.map(fila).join('') : '<p class="cp-vacio">No hay nada aceptado por comprar.</p>') +
+      (!adm && mias.length ? seccion('📝 Mis peticiones', mias, '') : '') +
+      (adm && rec.length ? `<div class="cp-cab"><b>Recientes (compradas / no aceptadas)</b><button type="button" class="button" data-act="vaciar">🧹 Vaciar</button></div>${rec.map(fila).join('')}` : '');
+    const t = el('cpTabCompra'); if (t) t.textContent = `🛒 Compra${adm && sol.length ? ' (' + sol.length + ' por aprobar)' : ''}`;
   }
 
   function renderSug() {
@@ -7008,29 +7034,56 @@ function _cqMontar() {
   }
 
   function textoLista() {
-    const pend = Object.values(cp.items).filter(i => !i.comprado).sort((a, b) => (b.urgente ? 1 : 0) - (a.urgente ? 1 : 0));
-    return '🛒 Lista de la compra\n' + pend.map(i => `- ${i.nombre}${i.cantidad ? ' (' + i.cantidad + ')' : ''}${i.urgente ? ' ⚠ URGENTE' : ''}`).join('\n');
+    const acep = Object.values(cp.items).filter(i => est(i) === 'aceptada').sort((a, b) => (b.urgente ? 1 : 0) - (a.urgente ? 1 : 0));
+    return '🛒 Lista de la compra\n' + acep.map(i => `- ${i.nombre}${i.cantidad ? ' (' + i.cantidad + ')' : ''}${i.urgente ? ' ⚠ URGENTE' : ''}`).join('\n');
+  }
+
+  function pedirCambios(i) {
+    const n = prompt('Producto:', i.nombre); if (n === null) return null;
+    const c = prompt('Cantidad:', i.cantidad || ''); if (c === null) return null;
+    return { nombre: n.trim() || i.nombre, cantidad: c.trim() };
   }
 
   async function click(ev) {
     const t = ev.target.closest('[data-act],[data-tab]'); if (!t) return;
     if (t.dataset.tab) return cambiarTab(t.dataset.tab);
     const act = t.dataset.act, id = t.dataset.id, now = new Date().toISOString();
+    if (['aceptar', 'aceptar-edit', 'rechazar', 'editar', 'comprado', 'reponer', 'vaciar'].includes(act) && !admin()) return msg('Solo el administrador puede hacer esto.', false);
+    const ref = `${base()}/compra/${id}`, i = cp.items[id];
     try {
       if (act === 'add') {
         const n = el('cpNombre').value.trim(); if (!n) return msg('Escribe qué hay que comprar.', false);
-        if (Object.values(cp.items).some(i => !i.comprado && String(i.nombre).toLowerCase() === n.toLowerCase())) return msg('Ya está en la lista.', false);
-        realDb.ref(`${base()}/compra`).push({ nombre: n, cantidad: el('cpCant').value.trim(), urgente: el('cpUrg').checked, autor: nombre(), uid: uidAct(), fecha: now, comprado: false }).catch(e => msg('Error al añadir: ' + e.message, false));
-        el('cpNombre').value = ''; el('cpCant').value = ''; el('cpUrg').checked = false; msg('Añadido a la lista.', true);
+        if (Object.values(cp.items).some(x => ['solicitada', 'aceptada'].includes(est(x)) && String(x.nombre).toLowerCase() === n.toLowerCase())) return msg('Ya está en la lista o pendiente de revisión.', false);
+        const dato = { nombre: n, cantidad: el('cpCant').value.trim(), urgente: el('cpUrg').checked, autor: nombre(), uid: uidAct(), fecha: now, estado: admin() ? 'aceptada' : 'solicitada' };
+        if (admin()) { dato.resueltoPor = nombre(); dato.resueltoEn = now; }
+        realDb.ref(`${base()}/compra`).push(dato).catch(e => msg('Error al añadir: ' + e.message, false));
+        el('cpNombre').value = ''; el('cpCant').value = ''; el('cpUrg').checked = false;
+        msg(admin() ? 'Añadido a la lista.' : 'Petición enviada. Administración la revisará y te avisará.', true);
+      } else if (act === 'aceptar' || act === 'aceptar-edit' || act === 'editar') {
+        if (!i) return;
+        let nom = i.nombre, can = i.cantidad || '';
+        if (act !== 'aceptar') { const r = pedirCambios(i); if (!r) return; nom = r.nombre; can = r.cantidad; }
+        const cambio = nom !== i.nombre || can !== (i.cantidad || '');
+        const upd = { nombre: nom, cantidad: can };
+        if (act !== 'editar') { upd.estado = 'aceptada'; upd.resueltoPor = nombre(); upd.resueltoEn = now; upd.motivo = null; }
+        if (cambio && !i.original) upd.original = { nombre: i.nombre, cantidad: i.cantidad || '' };
+        await realDb.ref(ref).update(upd);
+        if (act === 'editar') { if (cambio) avisar(i, `🛒 Tu petición ${desc(i.nombre, i.cantidad)} ha sido ajustada: ahora ${desc(nom, can)}.`); }
+        else avisar(i, cambio ? `🛒 Tu petición ${desc(i.nombre, i.cantidad)} ha sido aceptada con cambios: ahora ${desc(nom, can)}.` : `🛒 Tu petición ${desc(i.nombre, i.cantidad)} ha sido aceptada.`);
+      } else if (act === 'rechazar') {
+        if (!i) return;
+        const motivo = prompt('Motivo (opcional, lo verá quien lo pidió):', ''); if (motivo === null) return;
+        await realDb.ref(ref).update({ estado: 'rechazada', motivo: motivo.trim(), resueltoPor: nombre(), resueltoEn: now });
+        avisar(i, `🛒 Tu petición ${desc(i.nombre, i.cantidad)} no ha sido aceptada${motivo.trim() ? ': ' + motivo.trim() : '.'}`);
       } else if (act === 'comprado') {
-        await realDb.ref(`${base()}/compra/${id}`).update({ comprado: true, compradoPor: nombre(), compradoEn: now });
+        await realDb.ref(ref).update({ estado: 'comprada', compradoPor: nombre(), compradoEn: now });
       } else if (act === 'reponer') {
-        await realDb.ref(`${base()}/compra/${id}`).update({ comprado: false, compradoPor: null, compradoEn: null, fecha: now });
+        await realDb.ref(ref).update({ estado: 'aceptada', compradoPor: null, compradoEn: null });
       } else if (act === 'borrar') {
-        if (confirm('¿Eliminar este artículo de la lista?')) await realDb.ref(`${base()}/compra/${id}`).remove();
+        if (confirm('¿Eliminar este artículo?')) await realDb.ref(ref).remove();
       } else if (act === 'vaciar') {
-        const upd = {}; Object.entries(cp.items).forEach(([k, v]) => { if (v.comprado) upd[k] = null; });
-        if (Object.keys(upd).length && confirm('¿Borrar todos los artículos ya comprados?')) await realDb.ref(`${base()}/compra`).update(upd);
+        const upd = {}; Object.entries(cp.items).forEach(([k, v]) => { if (['comprada', 'rechazada'].includes(est(v))) upd[k] = null; });
+        if (Object.keys(upd).length && confirm('¿Borrar todos los artículos comprados y no aceptados?')) await realDb.ref(`${base()}/compra`).update(upd);
       } else if (act === 'compartir') {
         const txt = textoLista();
         if (navigator.share) await navigator.share({ text: txt }); else { await navigator.clipboard.writeText(txt); msg('Lista copiada al portapapeles.', true); }
@@ -7055,9 +7108,9 @@ function _cqMontar() {
         <div class="cp-tabs"><button type="button" class="cp-tab activo" id="cpTabCompra" data-tab="compra">🛒 Compra</button><button type="button" class="cp-tab" data-tab="sug">💡 Sugerencias</button></div>
         <div id="cpMsg" class="cp-msg"></div>
         <div class="cp-panel activo" data-panel="compra">
-          <p class="cp-nota">Apunta aquí lo que falta. Cuando alguien vaya a la ferretería, abre la lista y marca lo que compra.</p>
+          <p class="cp-nota">Pide aquí lo que falta y marca «Urgente» solo si no puede esperar. Administración revisará tu petición y verás si se acepta, se ajusta o no se acepta; también te llegará un aviso.</p>
           <div class="cp-add"><input type="text" id="cpNombre" placeholder="¿Qué hay que comprar?" maxlength="80"><input type="text" id="cpCant" class="cp-cant" placeholder="Cantidad" maxlength="30">
-            <label class="cp-chkl"><input type="checkbox" id="cpUrg"> Urgente</label><button type="button" class="button" data-act="add">➕ Añadir</button></div>
+            <label class="cp-chkl"><input type="checkbox" id="cpUrg"> Urgente</label><button type="button" class="button" data-act="add">➕ Pedir</button></div>
           <div id="cpLista"></div>
         </div>
         <div class="cp-panel" data-panel="sug">
@@ -7082,39 +7135,4 @@ function _cqMontar() {
 
   const arrancar = () => { try { mount(); } catch (e) { console.warn('Compra: no se pudo montar', e); } };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
-})();
-
-/* ===== BARRA FIJA CON LA INSTALACIÓN ACTIVA (añadir al final de app.js) ===== */
-(function () {
-  const KEY = 'instalacionesNombres', pidiendo = {};
-  const nombres = () => { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } };
-  const guardar = (id, n) => { const m = nombres(); m[id] = n; localStorage.setItem(KEY, JSON.stringify(m)); };
-  function pintar() {
-    try {
-      const inst = localStorage.getItem('instalacionActiva');
-      const main = document.getElementById('mainScreen');
-      const enLogin = !!main && getComputedStyle(main).display !== 'none';
-      let b = document.getElementById('barraInstalacion');
-      if (!inst || inst === 'default' || enLogin) { if (b) b.style.display = 'none'; document.body.classList.remove('con-barra-inst'); return; }
-      if (!b) { b = document.createElement('div'); b.id = 'barraInstalacion'; document.body.appendChild(b); }
-      b.textContent = '🏭 ' + (nombres()[inst] || inst);
-      b.style.display = 'block'; document.body.classList.add('con-barra-inst');
-      if (!pidiendo[inst] && typeof auth !== 'undefined' && auth.currentUser) {
-        pidiendo[inst] = true;
-        realDb.ref(`instalaciones/${inst}/meta/nombre`).once('value')
-          .then(s => { if (s.val()) { guardar(inst, s.val()); pintar(); } }).catch(() => {});
-      }
-    } catch (e) { console.warn('Barra de instalación:', e); }
-  }
-  function iniciar() {
-    if (!document.getElementById('barraInstalacionCss')) {
-      const st = document.createElement('style'); st.id = 'barraInstalacionCss';
-      st.textContent = '#barraInstalacion{position:fixed;top:0;left:0;right:0;z-index:1002;display:none;padding:calc(5px + env(safe-area-inset-top,0px)) 12px 5px;background:var(--blue-dim);color:#fff;text-align:center;font-weight:700;font-size:.9rem;line-height:1.2;letter-spacing:.03em;box-shadow:var(--shadow-sm)}body.con-barra-inst{padding-top:calc(34px + env(safe-area-inset-top,0px))}body.con-barra-inst .notification-icons,body.con-barra-inst .stock-notification-icon{top:calc(40px + env(safe-area-inset-top,0px))}body.con-barra-inst .notification-bar{top:calc(28px + env(safe-area-inset-top,0px))}';
-      document.head.appendChild(st);
-    }
-    new MutationObserver(m => { if (m.some(x => x.target.classList && x.target.classList.contains('screen'))) pintar(); })
-      .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['style'] });
-    pintar(); setTimeout(pintar, 1500);
-  }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
 })();
