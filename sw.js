@@ -1,4 +1,4 @@
-const CACHE_NAME = 'edar-mantenimiento-v12';
+const CACHE_NAME = 'edar-mantenimiento-v13';
 const APP_SHELL = [
   './',
   './index.html',
