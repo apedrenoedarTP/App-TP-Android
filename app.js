@@ -1465,6 +1465,7 @@ async function guardarAsignacionIcono(id) {
   const uids    = marcados.map(c => c.value);
   const nombres = marcados.map(c => c.dataset.nombre);
   const extVal  = ext?.value.trim() || '';
+  Object.assign(db.mantenimientosPeriodicos[idx], _pnLeer('asig-sel-' + id));
   db.mantenimientosPeriodicos[idx].asignadoAUids    = uids;
   db.mantenimientosPeriodicos[idx].asignadoANombres = nombres;
   db.mantenimientosPeriodicos[idx].asignadoAExterno = uids.length ? '' : extVal;
@@ -2356,6 +2357,7 @@ async function createWorkOrder() {
     asignadoAUids,
     asignadoANombres,
     asignadoAExterno,
+    ..._pnLeer('asignadoWorkOrder'),
     origen:           'parteTrabajo',
     creadoPorUid:     _sesionAutor().uid,
     creadoPorNombre:  _sesionAutor().nombre,
@@ -2439,6 +2441,7 @@ async function saveWorkOrderChanges(orderId) {
       const nombresSel = marcadosSel.map(c => c.dataset.nombre);
       order.asignadoAUids    = uidsSel;
       order.asignadoANombres = nombresSel;
+      Object.assign(order, _pnLeer(`edit-asignado-${orderId}`));
       delete order.asignadoAUid;
       delete order.asignadoANombre;
       if (uidsSel.length) {
@@ -2532,6 +2535,7 @@ async function completeWorkOrder(orderId, buttonElement) {
   if (!order) { console.error('Work order not found:', orderId); return; }
 
   if (!confirm(`¿Marcar como completado "${order.equipo || order.descripcion || 'este parte'}"?`)) return;
+  const part = await _pedirParticipantes(order); if (!part) return;
 
   const hoy = new Date().toISOString().split('T')[0];
   const fechaInput = prompt('Fecha de ejecución real (AAAA-MM-DD):', hoy);
@@ -2540,19 +2544,21 @@ async function completeWorkOrder(orderId, buttonElement) {
 
   // Stamp completion data on a copy — do not mutate the live object yet
   const completedOrder = { ...order, fechaEjecucion, estado: 'completado',
+    participantesUids:    part.uids,
+    participantesNombres: part.nombres,
     cerradoPorUid:    _sesionAutor().uid,
     cerradoPorNombre: _sesionAutor().nombre,
     cerradoPorEmail:  _sesionAutor().email
   };
 
-  _archivarHistorialTrabajo({
+  part.uids.forEach((u, k) => _archivarHistorialTrabajo({
     origen:      completedOrder.origen || (ref.includes('Tareas') ? 'parteTrabajo' : 'averiaAntigua'),
     equipo:      completedOrder.equipo,
     descripcion: completedOrder.descripcion,
     fecha:       completedOrder.fechaEjecucion,
-    uid:         completedOrder.cerradoPorUid,
-    nombre:      completedOrder.cerradoPorNombre
-  });
+    uid:         u,
+    nombre:      part.nombres[k]
+  }));
 
   try {
 
@@ -2960,7 +2966,8 @@ async function guardarEdicionMantenimiento(id) {
       tipo:                 registroPrevio.tipo || 'preventivo',
       asignadoAUids:        uidsFinal,
       asignadoANombres:     nombresFinal,
-      asignadoAExterno:     extFinal
+      asignadoAExterno:     extFinal,
+      ..._pnLeer(`newAsignado-${id}`)
     };
 
     await realDb.ref(`instalaciones/${INST()}/mantenimientosPeriodicos`).set(db.mantenimientosPeriodicos);
@@ -3146,6 +3153,7 @@ async function completeMaintenance(id, buttonElement) {
   const hoy = new Date().toISOString().split('T')[0];
   const fechaInput = prompt('Fecha de ejecución real (AAAA-MM-DD):', hoy);
   if (fechaInput === null) return; // cancelado
+  const part = await _pedirParticipantes(m); if (!part) return;
 
   const fechaEjecucion  = fechaInput.trim() || hoy;
   const fechaProgramada = calcularProximaFecha(m).toISOString().split('T')[0];
@@ -3160,6 +3168,8 @@ async function completeMaintenance(id, buttonElement) {
     diasDesviacion,
     operario:         _operarioDisplay(m),
     observaciones:    '',
+    participantes:    part.nombres,
+    participantesUids: part.uids,
     cerradoPorUid:    _sesionAutor().uid,
     cerradoPorNombre: _sesionAutor().nombre,
     cerradoPorEmail:  _sesionAutor().email
@@ -4447,6 +4457,8 @@ async function _obtenerAvisosVencidosUsuario() {
     const instIds = uSnap.val() || [];
     if (!instIds.length) return [];
     const ahora = new Date(); ahora.setHours(0,0,0,0);
+    const hoyISO = `${ahora.getFullYear()}-${String(ahora.getMonth() + 1).padStart(2, '0')}-${String(ahora.getDate()).padStart(2, '0')}`;
+    const venceHoy = m => { try { return calcularProximaFecha(m).toISOString().slice(0, 10) <= hoyISO; } catch (e) { return false; } };
     const avisos = [];
     await Promise.all(instIds.map(async (instId) => {
       const snap = await realDb.ref(`instalaciones/${instId}`).once('value');
@@ -4458,14 +4470,14 @@ async function _obtenerAvisosVencidosUsuario() {
       const averias = (inst.workOrdersAverias || []).filter(Boolean);
 
       mants.forEach(m => {
-        if (_getAsignadosUids(m).includes(uid) && esMantenimientoVencido(m)) {
-          avisos.push({ titulo: [m.equipo, m.accion].filter(Boolean).join(' — '), instalacion: nombreInst, tipo: 'mantenimiento' });
+        if (_getAsignadosUids(m).includes(uid) && (esMantenimientoVencido(m) || venceHoy(m))) {
+          avisos.push({ titulo: [m.equipo, m.accion].filter(Boolean).join(' — '), instalacion: nombreInst, tipo: 'mantenimiento', personas: parseInt(m.personasNecesarias, 10) || 1 });
         }
       });
       [...tareas, ...averias].forEach(t => {
         const abierto = !t.estado || t.estado === 'pendiente' || t.estado === 'en_curso';
-        if (abierto && _getAsignadosUids(t).includes(uid) && t.fechaProgramada && new Date(t.fechaProgramada) < ahora) {
-          avisos.push({ titulo: [t.equipo, t.accion || t.descripcion].filter(Boolean).join(' — '), instalacion: nombreInst, tipo: t.tipo === 'averia' ? 'averia' : 'tarea', prioridad: prioridadKey(t.prioridad) });
+        if (abierto && _getAsignadosUids(t).includes(uid) && t.fechaProgramada && String(t.fechaProgramada).slice(0, 10) <= hoyISO) {
+          avisos.push({ titulo: [t.equipo, t.accion || t.descripcion].filter(Boolean).join(' — '), instalacion: nombreInst, tipo: t.tipo === 'averia' ? 'averia' : 'tarea', prioridad: prioridadKey(t.prioridad), personas: parseInt(t.personasNecesarias, 10) || 1 });
         }
       });
     }));
@@ -4528,13 +4540,13 @@ async function abrirNotificaciones() {
     }).join('') + '<div style="margin-bottom:14px"></div>';
   }
 
-  html += '<p style="font-weight:700;margin:0 0 6px">⚠️ Trabajos vencidos</p>';
+  html += '<p style="font-weight:700;margin:0 0 6px">⚠️ Trabajos de hoy y vencidos</p>';
   if (!avisos.length) {
-    html += '<p style="color:var(--text-muted);font-size:0.85rem">No tienes trabajos vencidos.</p>';
+    html += '<p style="color:var(--text-muted);font-size:0.85rem">No tienes trabajos para hoy ni vencidos.</p>';
   } else {
     html += avisos.map(a => `
       <div class="notif-item notif-item--noleida">
-        <p class="notif-item__mensaje">Tienes ${a.tipo === 'mantenimiento' ? 'un mantenimiento' : a.tipo === 'averia' ? 'una avería' : 'un trabajo'} asignado en <strong>${a.instalacion}</strong>${a.titulo ? ' — ' + a.titulo : ''}${a.prioridad ? ' ' + prioridadBadgeHtml(a.prioridad) : ''}</p>
+        <p class="notif-item__mensaje">Tienes ${a.tipo === 'mantenimiento' ? 'un mantenimiento' : a.tipo === 'averia' ? 'una avería' : 'un trabajo'} asignado en <strong>${a.instalacion}</strong>${a.titulo ? ' — ' + a.titulo : ''}${a.personas ? ' · ' + (a.personas === 1 ? '👤 En solitario' : '👥 ' + a.personas + ' personas') : ''}${a.prioridad ? ' ' + prioridadBadgeHtml(a.prioridad) : ''}</p>
       </div>`).join('');
   }
 
@@ -7048,6 +7060,7 @@ function _cqMontar() {
     const t = ev.target.closest('[data-act],[data-tab]'); if (!t) return;
     if (t.dataset.tab) return cambiarTab(t.dataset.tab);
     const act = t.dataset.act, id = t.dataset.id, now = new Date().toISOString();
+    if ((act === 'comprado' || act === 'reponer' || act === 'vaciar') && !admin()) return msg('Solo el administrador puede marcar lo comprado.', false);
     if (['aceptar', 'aceptar-edit', 'rechazar', 'editar', 'comprado', 'reponer', 'vaciar'].includes(act) && !admin()) return msg('Solo el administrador puede hacer esto.', false);
     const ref = `${base()}/compra/${id}`, i = cp.items[id];
     try {
@@ -7135,4 +7148,177 @@ function _cqMontar() {
 
   const arrancar = () => { try { mount(); } catch (e) { console.warn('Compra: no se pudo montar', e); } };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
+})();
+
+/* ===== PERSONAS POR TRABAJO + PARTICIPANTES + RELEVO DEL TURNO DE TARDE (añadir al final de app.js) ===== */
+(function () {
+  const CSS = `.pn-bloque{margin:8px 0;font-size:.92rem}.pn-bloque label{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--text-secondary)}.pn-select{min-height:40px}.pn-turno{display:block;margin-top:4px;color:var(--text-secondary);font-size:.85rem}
+.pn-badge{font-size:.9rem;font-weight:700;color:var(--text-primary);margin:8px 0}
+.pn-overlay{position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:16px}
+.pn-dialog{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);padding:18px;max-width:420px;width:100%;max-height:90vh;overflow:auto}
+.pn-dialog h3{margin:0 0 6px}.pn-dialog p{margin:6px 0;font-size:.92rem;color:var(--text-secondary)}
+.pn-dialog label.pn-op{display:flex;align-items:center;gap:10px;padding:10px;margin:6px 0;border:1px solid var(--border);border-radius:var(--radius-md);cursor:pointer}
+.pn-dialog input[type=text]{width:100%;box-sizing:border-box;margin:6px 0;min-height:42px}
+.pn-dialog .pn-err{color:var(--red);min-height:20px;font-size:.88rem}
+.pn-dialog .pn-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}`;
+  const textoPersonas = n => (n === 1 ? '👤 En solitario' : `👥 ${n} personas`);
+
+  /* ── Registro asociado a cada lista de asignación ── */
+  function registroDe(cid) {
+    const quitar = p => (cid.startsWith(p) ? cid.slice(p.length) : null);
+    let id;
+    if ((id = quitar('asig-sel-')) !== null || (id = quitar('newAsignado-')) !== null) return (db.mantenimientosPeriodicos || []).find(m => String(m.id) === id);
+    if ((id = quitar('edit-asignado-')) !== null) return [...(db.workOrdersTareas || []), ...(db.workOrdersAverias || []), ...(db.workOrders || [])].find(o => o && String(o.id) === id);
+    return null;
+  }
+  function notaTurno(cid) {
+    const cont = document.getElementById(cid); if (!cont) return;
+    const n = cont.parentElement && cont.parentElement.querySelector(`.pn-bloque[data-for="${cid}"] .pn-turno`);
+    if (n) n.textContent = cont.dataset.turno === 'T' ? '🌙 Turno de tarde: si no se completa antes del viernes, pasa a la siguiente persona de tarde.' : '';
+  }
+  function inyectar(cid) {
+    const cont = document.getElementById(cid); if (!cont || !cont.parentElement) return;
+    if (!document.getElementById('pnCss')) { const st = document.createElement('style'); st.id = 'pnCss'; st.textContent = CSS; document.head.appendChild(st); }
+    const reg = registroDe(cid) || {}, n = parseInt(reg.personasNecesarias, 10) || 1;
+    let b = cont.parentElement.querySelector(`.pn-bloque[data-for="${cid}"]`);
+    if (!b) { b = document.createElement('div'); b.className = 'pn-bloque'; b.dataset.for = cid; cont.insertAdjacentElement('afterend', b); }
+    b.innerHTML = `<label>¿Cuántas personas deben hacerlo? <select class="pn-select" data-for="${cid}"><option value="1"${n === 1 ? ' selected' : ''}>En solitario</option><option value="2"${n === 2 ? ' selected' : ''}>2 personas</option><option value="3"${n === 3 ? ' selected' : ''}>3 personas</option></select></label><small class="pn-turno"></small>`;
+    cont.dataset.turno = reg.asignadoATurno === 'T' ? 'T' : '';
+    notaTurno(cid);
+    if (!cont.dataset.pnEscucha) {
+      cont.dataset.pnEscucha = '1';
+      cont.addEventListener('change', e => { if (e.target.matches('input[type=checkbox]')) { cont.dataset.turno = ''; notaTurno(cid); } });
+    }
+  }
+  window._pnLeer = function (cid) {
+    const cont = document.getElementById(cid); if (!cont) return {};
+    const out = {}, sel = cont.parentElement && cont.parentElement.querySelector(`.pn-select[data-for="${cid}"]`);
+    if (sel) out.personasNecesarias = parseInt(sel.value, 10) || 1;
+    out.asignadoATurno = (cont.dataset.turno === 'T' && cont.querySelector('input[type=checkbox]:checked')) ? 'T' : null;
+    return out;
+  };
+
+  /* ── Enganches: lista de operarios y botón «De tarde» ── */
+  const origCargar = window._cargarOperariosCheckboxes;
+  if (typeof origCargar === 'function') window._cargarOperariosCheckboxes = async function (cid) {
+    await origCargar.apply(this, arguments);
+    if (cid !== 'notifAdminDestinatarios') { try { inyectar(cid); } catch (e) { console.warn('Personas:', e); } }
+  };
+  const origTarde = window.cuadranteAsignarTarde;
+  if (typeof origTarde === 'function') window.cuadranteAsignarTarde = async function (btn) {
+    await origTarde.apply(this, arguments);
+    const cont = btn.closest('.asig-checkbox-container');
+    if (cont && /^🌙 /.test(btn.textContent) && cont.querySelector('input[type=checkbox]:checked')) { cont.dataset.turno = 'T'; notaTurno(cont.id); }
+  };
+
+  /* ── Quién ha participado (al cerrar un trabajo) ── */
+  window._pedirParticipantes = function (reg) {
+    return new Promise(resolve => {
+      const need = parseInt(reg.personasNecesarias, 10) || 1, yo = _sesionAutor();
+      const uids = _getAsignadosUids(reg), noms = _getAsignadosNombres(reg);
+      const lista = uids.map((u, k) => ({ uid: u, nombre: noms[k] || u }));
+      if (!lista.some(p => p.uid === yo.uid)) lista.unshift({ uid: yo.uid, nombre: yo.nombre });
+      const ov = document.createElement('div'); ov.className = 'pn-overlay';
+      ov.innerHTML = `<div class="pn-dialog" role="dialog" aria-modal="true"><h3>¿Quién ha participado?</h3>
+        <p>Este trabajo es: <b>${textoPersonas(need)}</b></p>
+        ${lista.map((p, k) => `<label class="pn-op"><input type="checkbox" data-k="${k}"${p.uid === yo.uid ? ' checked' : ''}> ${_cqEsc(p.nombre)}</label>`).join('')}
+        <input type="text" class="pn-otro" placeholder="Otra persona (opcional, escribe su nombre)" maxlength="60">
+        <div class="pn-err"></div><div class="pn-btns"><button type="button" class="button pn-cancel">Cancelar</button><button type="button" class="button pn-ok">Confirmar y completar</button></div></div>`;
+      document.body.appendChild(ov);
+      const cerrar = v => { ov.remove(); resolve(v); };
+      ov.querySelector('.pn-cancel').onclick = () => cerrar(null);
+      ov.querySelector('.pn-ok').onclick = () => {
+        const sel = [...ov.querySelectorAll('input[type=checkbox]:checked')].map(c => lista[+c.dataset.k]);
+        const otro = ov.querySelector('.pn-otro').value.trim();
+        if (otro) sel.push({ uid: '', nombre: otro });
+        if (sel.length < need) { ov.querySelector('.pn-err').textContent = `Este trabajo es de ${need} persona${need > 1 ? 's' : ''} y has marcado ${sel.length}.`; return; }
+        cerrar({ uids: sel.map(p => p.uid), nombres: sel.map(p => p.nombre) });
+      };
+    });
+  };
+
+  /* ── Etiqueta «En solitario / 2 personas / 3 personas» en las listas ── */
+  let tBadge;
+  function etiquetas() {
+    document.querySelectorAll('button[onclick*="completeWorkOrder"],button[onclick*="completeMaintenance"]').forEach(b => {
+      if (b.dataset.pn) return; b.dataset.pn = '1';
+      const oc = b.getAttribute('onclick') || '', m = oc.match(/\((?:'([^']+)'|(\d+))/); if (!m) return;
+      const id = m[1] || m[2];
+      const reg = oc.includes('completeMaintenance') ? (db.mantenimientosPeriodicos || []).find(x => String(x.id) === id)
+        : [...(db.workOrdersTareas || []), ...(db.workOrdersAverias || []), ...(db.workOrders || [])].find(o => o && String(o.id) === id);
+      if (!reg) return;
+      if (!document.getElementById('pnCss')) { const st = document.createElement('style'); st.id = 'pnCss'; st.textContent = CSS; document.head.appendChild(st); }
+      const d = document.createElement('div'); d.className = 'pn-badge';
+      d.textContent = textoPersonas(parseInt(reg.personasNecesarias, 10) || 1) + (reg.asignadoATurno === 'T' ? ' · 🌙 turno de tarde' : '');
+      b.insertAdjacentElement('beforebegin', d);
+    });
+  }
+  new MutationObserver(() => { clearTimeout(tBadge); tBadge = setTimeout(etiquetas, 60); }).observe(document.body, { childList: true, subtree: true });
+
+  /* ── Relevo semanal: trabajos del turno de tarde sin completar pasan a la nueva persona de tarde ── */
+  let ultimoDia = '';
+  async function relevoTurno() {
+    try {
+      if (typeof auth === 'undefined' || !auth.currentUser || INST() === 'default') return;
+      const hoy = _cqFechaLocal(), clave = hoy + '|' + INST(); if (ultimoDia === clave) return;
+      const q = await cuadranteQuienDeTarde(hoy); if (!q || !q.uid) return;
+      ultimoDia = clave;
+      const lunesActual = cqIso(cqLunes(cqDate(hoy))), base = `instalaciones/${INST()}`;
+      const lunesDe = (k, r) => {
+        const f = k === 'mantenimientosPeriodicos' ? calcularProximaFecha(r).toISOString().slice(0, 10) : String(r.fechaProgramada || r.fecha || '').slice(0, 10);
+        return f ? cqIso(cqLunes(cqDate(f))) : lunesActual;
+      };
+      let cambios = 0;
+      for (const k of ['workOrdersTareas', 'workOrdersAverias', 'mantenimientosPeriodicos']) {
+        const arr = db[k] || [];
+        for (let i = 0; i < arr.length; i++) {
+          const r = arr[i];
+          if (!r || r.asignadoATurno !== 'T' || lunesDe(k, r) >= lunesActual) continue;
+          if (_getAsignadosUids(r).length === 1 && _getAsignadosUids(r)[0] === q.uid) continue;
+          const sid = await realDb.ref(`${base}/${k}/${i}/id`).once('value');
+          if (String(sid.val()) !== String(r.id)) continue;
+          await realDb.ref(`${base}/${k}/${i}`).update({ asignadoAUids: [q.uid], asignadoANombres: [q.nombre], asignadoAExterno: '' });
+          r.asignadoAUids = [q.uid]; r.asignadoANombres = [q.nombre]; r.asignadoAExterno = ''; cambios++;
+        }
+      }
+      if (cambios) { await saveToLocalStorage(); if (typeof updateNotificationIcons === 'function') updateNotificationIcons(); }
+    } catch (e) { console.warn('Relevo del turno de tarde:', e); }
+  }
+  if (typeof auth !== 'undefined') auth.onAuthStateChanged(u => { if (u) setTimeout(relevoTurno, 8000); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) setTimeout(relevoTurno, 1500); });
+})();
+
+/* ===== BARRA FIJA CON LA INSTALACIÓN ACTIVA (añadir al final de app.js) ===== */
+(function () {
+  const KEY = 'instalacionesNombres', pidiendo = {};
+  const nombres = () => { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } };
+  const guardar = (id, n) => { const m = nombres(); m[id] = n; localStorage.setItem(KEY, JSON.stringify(m)); };
+  function pintar() {
+    try {
+      const inst = localStorage.getItem('instalacionActiva');
+      const main = document.getElementById('mainScreen');
+      const enLogin = !!main && getComputedStyle(main).display !== 'none';
+      let b = document.getElementById('barraInstalacion');
+      if (!inst || inst === 'default' || enLogin) { if (b) b.style.display = 'none'; document.body.classList.remove('con-barra-inst'); return; }
+      if (!b) { b = document.createElement('div'); b.id = 'barraInstalacion'; document.body.appendChild(b); }
+      b.textContent = '🏭 ' + (nombres()[inst] || inst);
+      b.style.display = 'block'; document.body.classList.add('con-barra-inst');
+      if (!pidiendo[inst] && typeof auth !== 'undefined' && auth.currentUser) {
+        pidiendo[inst] = true;
+        realDb.ref(`instalaciones/${inst}/meta/nombre`).once('value')
+          .then(s => { if (s.val()) { guardar(inst, s.val()); pintar(); } }).catch(() => {});
+      }
+    } catch (e) { console.warn('Barra de instalación:', e); }
+  }
+  function iniciar() {
+    if (!document.getElementById('barraInstalacionCss')) {
+      const st = document.createElement('style'); st.id = 'barraInstalacionCss';
+      st.textContent = '#barraInstalacion{position:fixed;top:0;left:0;right:0;z-index:1002;display:none;padding:calc(5px + env(safe-area-inset-top,0px)) 12px 5px;background:var(--blue-dim);color:#fff;text-align:center;font-weight:700;font-size:.9rem;line-height:1.2;letter-spacing:.03em;box-shadow:var(--shadow-sm)}body.con-barra-inst{padding-top:calc(34px + env(safe-area-inset-top,0px))}body.con-barra-inst .notification-icons,body.con-barra-inst .stock-notification-icon{top:calc(40px + env(safe-area-inset-top,0px))}body.con-barra-inst .notification-bar{top:calc(28px + env(safe-area-inset-top,0px))}';
+      document.head.appendChild(st);
+    }
+    new MutationObserver(m => { if (m.some(x => x.target.classList && x.target.classList.contains('screen'))) pintar(); })
+      .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['style'] });
+    pintar(); setTimeout(pintar, 1500);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
 })();
