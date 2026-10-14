@@ -461,7 +461,18 @@ function blobToBase64(blob) {
 }
 
 // Construye un Excel de una sola hoja a partir de un array de objetos
+function _fechaES(v) {
+  if (typeof v !== 'string') return v;
+  const m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(v)) {
+    const d = new Date(v);
+    if (!isNaN(d)) return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  }
+  return v;
+}
 function crearExcelBlob(filas, nombreHoja) {
+  filas = (filas || []).map(f => { const o = {}; Object.keys(f).forEach(k => { o[k] = /fecha/i.test(k) ? _fechaES(f[k]) : f[k]; }); return o; });
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(filas);
   XLSX.utils.book_append_sheet(wb, ws, nombreHoja);
@@ -716,7 +727,7 @@ async function exportarWorkOrderToExcel(workOrder) {
   const autor = _sesionAutor();
   const fila = _normalizarFilaParte({
     Equipo:          workOrder.equipo || '',
-    FechaInicio:     workOrder.fechaInicio || workOrder.fecha || '',
+    FechaInicio:     workOrder.fechaProgramada || workOrder.fecha || workOrder.fechaInicio || '',
     Averia:          workOrder.averia || '',
     Causa:           workOrder.causa || '',
     FechaFin:        workOrder.fechaEjecucion || workOrder.fechaFin || '',
@@ -784,7 +795,7 @@ function _entradaColaParte(wo) {
       creado:      new Date().toISOString(),
       fila: _normalizarFilaParte({
         Equipo:          wo.equipo || '',
-        FechaInicio:     wo.fechaInicio || wo.fecha || '',
+        FechaInicio:     wo.fechaProgramada || wo.fecha || wo.fechaInicio || '',
         Averia:          wo.averia || '',
         Causa:           wo.causa || '',
         FechaFin:        wo.fechaEjecucion || wo.fechaFin || '',
