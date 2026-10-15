@@ -1604,6 +1604,7 @@ function _crearItemPendienteAveria(order) {
       <div class="edit-delete-buttons">
         <button class="button" onclick="saveWorkOrderChanges(${order.id})">Guardar Cambios</button>
         <button class="button" onclick="cancelWorkOrderEdit(${order.id})">Cancelar</button>
+        ${esAdmin ? `<button class="button back-button" onclick="eliminarParte(${order.id})">🗑 Eliminar</button>` : ''}
       </div>
     </div>
   `;
@@ -1689,6 +1690,7 @@ function _crearItemPendienteTarea(order) {
       <div class="edit-delete-buttons">
         <button class="button" onclick="saveWorkOrderChanges(${order.id})">Guardar Cambios</button>
         <button class="button" onclick="cancelWorkOrderEdit(${order.id})">Cancelar</button>
+        ${esAdmin ? `<button class="button back-button" onclick="eliminarParte(${order.id})">🗑 Eliminar</button>` : ''}
       </div>
     </div>
   `;
@@ -2231,6 +2233,32 @@ function _getOrderArray(orderId) {
   if ((db.workOrdersTareas  || []).find(o => o && o.id === orderId)) return { arr: db.workOrdersTareas,  ref: `instalaciones/${INST()}/workOrdersTareas`,  show: showPendingTareas  };
   return { arr: db.workOrders, ref: `instalaciones/${INST()}/workOrders`, show: showPendingWorkOrders };
 }
+
+async function eliminarParte(orderId) {
+  if (localStorage.getItem('usuarioRol') !== 'admin') { alert('Solo el administrador puede eliminar partes.'); return; }
+  const { arr, ref, show } = _getOrderArray(orderId);
+  const order = (arr || []).find(wo => wo && wo.id === orderId);
+  if (!order) { alert('No se encontró el parte.'); return; }
+  if (!confirm(`¿Eliminar definitivamente el parte "${order.equipo || order.descripcion || 'sin título'}"?\n\nEsta acción no se puede deshacer.`)) return;
+  try {
+    const resto = arr.filter(wo => wo && wo.id !== orderId);
+    await realDb.ref(ref).set(resto.length ? resto : null);
+    if (ref.includes('Averias')) db.workOrdersAverias = resto;
+    else if (ref.includes('Tareas')) db.workOrdersTareas = resto;
+    else db.workOrders = resto;
+    if (order.fotoId) {
+      realDb.ref(`fotos/${INST()}/${order.fotoId}`).remove().catch(() => {});
+      realDb.ref(`fotosIdx/${INST()}/${order.fotoId}`).remove().catch(() => {});
+      realDb.ref(`instalaciones/${INST()}/fotos/${order.fotoId}`).remove().catch(() => {});
+      realDb.ref(`instalaciones/${INST()}/fotosIdx/${order.fotoId}`).remove().catch(() => {});
+    }
+    localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
+    checkPendingWorkOrders();
+    updateNotificationIcons();
+    _conservarVista(show);
+  } catch (e) { console.error('Error eliminando parte:', e); alert('Error al eliminar el parte: ' + e.message); }
+}
+window.eliminarParte = eliminarParte;
 
 
 /* =============================================================================
@@ -4452,7 +4480,7 @@ function _notifEsParaMi(notif, uid) {
 async function _obtenerNotificacionesUsuario() {
   const uid = localStorage.getItem('usuarioUid');
   if (!uid) return [];
-  const snap = await realDb.ref('notificaciones').once('value');
+  const snap = await realDb.ref('notificaciones').orderByChild('fecha').limitToLast(80).once('value');
   const data = snap.val() || {};
   return Object.entries(data)
     .filter(([id, n]) => _notifEsParaMi(n, uid) && !(n.eliminadoPor && n.eliminadoPor[uid]) && (!n.programada || (n.fecha || '') <= new Date().toISOString()))
@@ -4472,9 +4500,10 @@ async function _obtenerAvisosVencidosUsuario() {
     const venceHoy = m => { try { return calcularProximaFecha(m).toISOString().slice(0, 10) <= hoyISO; } catch (e) { return false; } };
     const avisos = [];
     await Promise.all(instIds.map(async (instId) => {
-      const snap = await realDb.ref(`instalaciones/${instId}`).once('value');
-      const inst = snap.val();
-      if (!inst) return;
+      const leer = p => realDb.ref(`instalaciones/${instId}/${p}`).once('value').then(s => s.val());
+      const [nom, mp, wt, wa] = await Promise.all([leer('meta/nombre'), leer('mantenimientosPeriodicos'), leer('workOrdersTareas'), leer('workOrdersAverias')]);
+      const inst = { meta: { nombre: nom }, mantenimientosPeriodicos: mp, workOrdersTareas: wt, workOrdersAverias: wa };
+      if (!nom && !mp && !wt && !wa) return;
       const nombreInst = (inst.meta && inst.meta.nombre) || instId;
       const mants   = (inst.mantenimientosPeriodicos || []).filter(Boolean);
       const tareas  = (inst.workOrdersTareas  || []).filter(Boolean);
@@ -4798,16 +4827,16 @@ function _comprimirImagen(src, max = 1280, q = 0.65) {
 
 async function _guardarFoto(data) {
   const id = 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  const base = `instalaciones/${INST()}`;
-  await realDb.ref(`${base}/fotos/${id}`).set(data);
-  await realDb.ref(`${base}/fotosIdx/${id}`).set({ t: new Date().toISOString(), b: data.length });
+  await realDb.ref(`fotos/${INST()}/${id}`).set(data);
+  await realDb.ref(`fotosIdx/${INST()}/${id}`).set({ t: new Date().toISOString(), b: data.length });
   return id;
 }
 
 async function verFotoParte(id) {
   try {
     if (!_fotoCache[id]) {
-      const s = await realDb.ref(`instalaciones/${INST()}/fotos/${id}`).once('value');
+      let s = await realDb.ref(`fotos/${INST()}/${id}`).once('value');
+      if (!s.val()) s = await realDb.ref(`instalaciones/${INST()}/fotos/${id}`).once('value');
       _fotoCache[id] = s.val();
     }
     if (!_fotoCache[id]) { alert('La foto ya no está disponible (se eliminó por antigüedad).'); return; }
@@ -4843,14 +4872,14 @@ async function _fotosMantenimiento() {
       localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
       alert('Fotos antiguas optimizadas.');
     }
-    const s = await realDb.ref(`${base}/fotosIdx`).once('value');
+    const s = await realDb.ref(`fotosIdx/${INST()}`).once('value');
     const idx = s.val() || {};
     const mb = Object.values(idx).reduce((n, x) => n + (x.b || 0), 0) / 1048576;
     if (mb > LIMITE_FOTOS_MB && confirm(`Las fotos ocupan ${mb.toFixed(0)} MB (objetivo: menos de ${LIMITE_FOTOS_MB} MB para no tener que pagar). ¿Borrar las de más de 12 meses?`)) {
       const lim = new Date(); lim.setMonth(lim.getMonth() - 12);
       const viejos = Object.keys(idx).filter(id => (idx[id].t || '') < lim.toISOString());
-      const upd = {}; viejos.forEach(id => { upd[`fotos/${id}`] = null; upd[`fotosIdx/${id}`] = null; });
-      if (viejos.length) await realDb.ref(base).update(upd);
+      const updF = {}, updI = {}; viejos.forEach(id => { updF[id] = null; updI[id] = null; });
+      if (viejos.length) { await realDb.ref(`fotos/${INST()}`).update(updF); await realDb.ref(`fotosIdx/${INST()}`).update(updI); }
       alert(`Se borraron ${viejos.length} foto(s) antiguas.`);
     }
   } catch (e) { console.warn('Mantenimiento de fotos:', e); }
@@ -5530,7 +5559,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     verificarMantenimientosPeriodicos();
     setInterval(verificarMantenimientosPeriodicos, 60000);
     setInterval(checkPastDueMaintenances,          60000);
-    setInterval(actualizarBadgeNotificaciones,     60000);
+    setInterval(() => { if (!document.hidden) actualizarBadgeNotificaciones(); }, 180000);
     setInterval(updateStockIcon,                   30000);
 
     // --- Error en el logo de fondo ---
