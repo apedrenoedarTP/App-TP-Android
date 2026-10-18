@@ -1,3 +1,5 @@
+/* Escape de texto para insertar en HTML (anti-XSS) */
+function _h(v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 /* =============================================================================
    EDAR Torre Pacheco — app.js
    Secciones:
@@ -378,7 +380,9 @@ function esMantenimientoVencido(mantenimiento) {
   if (!mantenimiento) return false;
   const ancla = mantenimiento.fechaUltimaEjecucion || mantenimiento.fecha;
   if (!ancla) return false;
-  return new Date() > calcularProximaFecha(mantenimiento);
+  const d = new Date();
+  const hoy = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return calcularProximaFecha(mantenimiento).toISOString().slice(0, 10) < hoy;
 }
 
 // Devuelve siempre un array de uids asignados, compatible con formato antiguo (string) y nuevo (array)
@@ -1119,7 +1123,7 @@ function _crearPopup(titulo) {
   popup.innerHTML = `
     <div class="np-dialog">
       <div class="np-header">
-        <h3>${titulo}</h3>
+        <h3>${_h(titulo)}</h3>
         <span class="np-count" id="popupCount" style="display:none"></span>
         <button type="button" class="np-close" aria-label="Cerrar" onclick="closePopup(this)">&times;</button>
       </div>
@@ -1203,10 +1207,10 @@ function showPendingWorkOrders() {
     div.className = 'pending-record overdue';
     div.dataset.id = order.id;
     div.innerHTML = `
-    <h4>${order.equipo || ''} ${prioridadBadgeHtml(order.prioridad)}</h4>
+    <h4>${_h(order.equipo) || ''} ${prioridadBadgeHtml(order.prioridad)}</h4>
       <p><strong>Programado:</strong> ${order.fechaProgramada || order.fecha || ''} &nbsp;|&nbsp; <strong>Creado:</strong> ${order.fechaCreacion ? order.fechaCreacion.split('T')[0] : ''}</p>
-      <p>Operario: <input type="text" value="${order.operario || ''}" onchange="updateWorkOrderOperator(${order.id}, this.value)"></p>
-      <p>Descripción: ${order.descripcion || ''}</p>
+      <p>Operario: <input type="text" value="${_h(order.operario) || ''}" onchange="updateWorkOrderOperator(${order.id}, this.value)"></p>
+      <p>Descripción: ${_h(order.descripcion) || ''}</p>
       <p>Estado: ${order.estado || ''}</p>
       ${photoHtml}
       <button class="button" onclick="editWorkOrder(${order.id})">Editar</button>
@@ -1214,11 +1218,11 @@ function showPendingWorkOrders() {
       <div class="work-order-edit-form" id="edit-form-${order.id}">
         <div class="form-group">
           <label>Descripción:</label>
-          <textarea id="edit-description-${order.id}">${order.descripcion || ''}</textarea>
+          <textarea id="edit-description-${order.id}">${_h(order.descripcion) || ''}</textarea>
         </div>
         <div class="form-group">
           <label>Operario:</label>
-            <input type="text" id="edit-operator-${order.id}" value="${order.operario || ''}" />
+            <input type="text" id="edit-operator-${order.id}" value="${_h(order.operario) || ''}" />
         </div>
         <div class="form-group"><label>Prioridad:</label>${prioridadSelectHtml(order.id, order.prioridad)}
         </div>
@@ -1268,9 +1272,9 @@ async function showPendingMaintenances() {
     const div = document.createElement('div');
     div.className = 'pending-record overdue';
     div.innerHTML = `
-      <h4>${m.equipo}</h4>
-      <p>Operario: <input type="text" value="${m.operario || ''}" onchange="updateMaintenanceOperator('${m.id}', this.value)"></p>
-      <p><strong>Acción:</strong> ${m.accion}</p>
+      <h4>${_h(m.equipo)}</h4>
+      <p>Operario: <input type="text" value="${_h(m.operario) || ''}" onchange="updateMaintenanceOperator('${m.id}', this.value)"></p>
+      <p><strong>Acción:</strong> ${_h(m.accion)}</p>
       <p><strong>Periodicidad:</strong> ${m.periodicidad} días</p>
       <p><strong>Última ejecución:</strong> ${m.fechaUltimaEjecucion || m.fecha || '—'}</p>
       <p><strong>Fecha prevista:</strong> ${nextDate.toLocaleDateString()}</p>
@@ -1312,7 +1316,7 @@ function showStockAlerts() {
   ordenarPorPropiedad(outOfStockItems, 'equipo').forEach(item => {
     const div = document.createElement('div');
     div.className = 'stock-info';
-    div.innerHTML = `<h4>${item.equipo}</h4><p>Recambio: ${item.recambio}</p><p>Stock: ${item.cantidad}</p>`;
+    div.innerHTML = `<h4>${_h(item.equipo)}</h4><p>Recambio: ${_h(item.recambio)}</p><p>Stock: ${_h(item.cantidad)}</p>`;
     content.appendChild(div);
   });
 }
@@ -1400,11 +1404,11 @@ function showPreventivosEquipos() {
         + '</div>'
       : '';
     div.innerHTML = `
-      <h4>${m.equipo}</h4>
-      <p><strong>Acción:</strong> ${m.accion}</p>
+      <h4>${_h(m.equipo)}</h4>
+      <p><strong>Acción:</strong> ${_h(m.accion)}</p>
       <p><strong>Periodicidad:</strong> ${m.periodicidad} días</p>
       <p><strong>Vencido desde:</strong> ${nextDate.toLocaleDateString()}</p>
-      <p><strong>Asignado a:</strong> ${_getAsignadosNombres(m).join(', ') || m.asignadoAExterno || '<span class="opacity-muted">Sin asignar</span>'}</p>
+      <p><strong>Asignado a:</strong> ${_h(_getAsignadosNombres(m).join(', ')) || m.asignadoAExterno || '<span class="opacity-muted">Sin asignar</span>'}</p>
       ${esAdmin ? '<button class="button" onclick="toggleAsigForm(\'' + m.id + '\')">👤 Asignar</button>' : ''}
       <button class="button" onclick="completeMaintenance('${m.id}', this)">Marcar como completado</button>
     ` + asigHtml;
@@ -1434,11 +1438,11 @@ function showTareasProgramadas() {
         + '</div>'
       : '';
     div.innerHTML = `
-      <h4>${m.equipo || m.accion || 'Trabajo periódico'}</h4>
-      <p><strong>Acción:</strong> ${m.accion || '—'}</p>
+      <h4>${_h(m.equipo || m.accion) || 'Trabajo periódico'}</h4>
+      <p><strong>Acción:</strong> ${_h(m.accion) || '—'}</p>
       <p><strong>Periodicidad:</strong> ${m.periodicidad} días</p>
       <p><strong>Vencido desde:</strong> ${nextDate.toLocaleDateString()}</p>
-      <p><strong>Asignado a:</strong> ${_getAsignadosNombres(m).join(', ') || m.asignadoAExterno || '<span class="opacity-muted">Sin asignar</span>'}</p>
+      <p><strong>Asignado a:</strong> ${_h(_getAsignadosNombres(m).join(', ')) || m.asignadoAExterno || '<span class="opacity-muted">Sin asignar</span>'}</p>
       ${esAdmin ? '<button class="button" onclick="toggleAsigForm(\'' + m.id + '\')">👤 Asignar</button>' : ''}
       <button class="button" onclick="completeMaintenance('${m.id}', this)">Marcar como completado</button>
     ` + asigHtml;
@@ -1576,23 +1580,23 @@ function _crearItemPendienteAveria(order) {
   div.dataset.id = order.id;
   const esAdmin = localStorage.getItem('usuarioRol') === 'admin';
   div.innerHTML = `
-    <h4>${order.equipo || ''} ${prioridadBadgeHtml(order.prioridad)}</h4>
+    <h4>${_h(order.equipo) || ''} ${prioridadBadgeHtml(order.prioridad)}</h4>
     <p><strong>Programado:</strong> ${order.fechaProgramada || order.fecha || ''} &nbsp;|&nbsp; <strong>Creado:</strong> ${order.fechaCreacion ? order.fechaCreacion.split('T')[0] : ''}</p>
-    <p><strong>Descripción:</strong> ${order.descripcion || ''}</p>
+    <p><strong>Descripción:</strong> ${_h(order.descripcion) || ''}</p>
     <p><strong>Estado:</strong> ${order.estado || ''}</p>
-    <p><strong>Asignado a:</strong> ${_getAsignadosNombres(order).join(', ') || order.asignadoAExterno || '<span class="opacity-muted">Sin asignar</span>'}</p>
+    <p><strong>Asignado a:</strong> ${_h(_getAsignadosNombres(order).join(', ')) || order.asignadoAExterno || '<span class="opacity-muted">Sin asignar</span>'}</p>
     ${photoHtml}
     <button class="button" onclick="editWorkOrder(${order.id})">Editar</button>
     <button class="button" onclick="completeWorkOrder(${order.id}, this)">Marcar como completado</button>
     <div class="work-order-edit-form" id="edit-form-${order.id}">
-      <div class="form-group"><label>Equipo:</label><input type="text" id="edit-equipo-${order.id}" value="${order.equipo || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
+      <div class="form-group"><label>Equipo:</label><input type="text" id="edit-equipo-${order.id}" value="${_h(order.equipo) || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
       <div class="form-group"><label>Fecha programada:</label><input type="date" id="edit-fecha-${order.id}" value="${order.fechaProgramada || order.fecha || ''}" ${localStorage.getItem('usuarioRol') === 'admin' ? '' : 'disabled class="opacity-muted"'}></div>
             <div class="form-group"><label>Prioridad:</label>${prioridadSelectHtml(order.id, order.prioridad)}</div>
-      <div class="form-group"><label>Descripción:</label><textarea id="edit-description-${order.id}">${order.descripcion || ''}</textarea></div>
-      <div class="form-group"><label>Operario:</label><input type="text" id="edit-operator-${order.id}" value="${order.operario || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
+      <div class="form-group"><label>Descripción:</label><textarea id="edit-description-${order.id}">${_h(order.descripcion) || ''}</textarea></div>
+      <div class="form-group"><label>Operario:</label><input type="text" id="edit-operator-${order.id}" value="${_h(order.operario) || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
       ${esAdmin ? `
       <div class="form-group"><label>Asignado a (usuario(s) sistema):</label><div id="edit-asignado-${order.id}" style="max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:6px"></div></div>
-      <div class="form-group"><label>Asignado a (externo / empresa):</label><input type="text" id="edit-asignado-ext-${order.id}" value="${order.asignadoAExterno || ''}" placeholder="Ej: Tecnicwater"></div>
+      <div class="form-group"><label>Asignado a (externo / empresa):</label><input type="text" id="edit-asignado-ext-${order.id}" value="${_h(order.asignadoAExterno) || ''}" placeholder="Ej: Tecnicwater"></div>
       ` : ''}
       <div class="form-group">
         <label>Consumo de Recambios:</label>
@@ -1668,25 +1672,25 @@ function _crearItemPendienteTarea(order) {
   div.dataset.id = order.id;
   const esAdmin = localStorage.getItem('usuarioRol') === 'admin';
   div.innerHTML = `
-    <h4>${order.equipo || ''} ${prioridadBadgeHtml(order.prioridad)}</h4>
+    <h4>${_h(order.equipo) || ''} ${prioridadBadgeHtml(order.prioridad)}</h4>
     <p><strong>Programado:</strong> ${order.fechaProgramada || order.fecha || ''} &nbsp;|&nbsp; <strong>Creado:</strong> ${order.fechaCreacion ? order.fechaCreacion.split('T')[0] : ''}</p>
-    <p><strong>Descripción:</strong> ${order.descripcion || ''}</p>
+    <p><strong>Descripción:</strong> ${_h(order.descripcion) || ''}</p>
     <p><strong>Estado:</strong> ${order.estado || ''}</p>
-    <p><strong>Asignado a:</strong> ${_getAsignadosNombres(order).join(', ') || order.asignadoAExterno || '<span class="opacity-muted">Sin asignar</span>'}</p>
+    <p><strong>Asignado a:</strong> ${_h(_getAsignadosNombres(order).join(', ')) || order.asignadoAExterno || '<span class="opacity-muted">Sin asignar</span>'}</p>
     ${photoHtml}
     <button class="button" onclick="editWorkOrder(${order.id})">Editar</button>
     <button class="button" onclick="completeWorkOrder(${order.id}, this)">Marcar como completado</button>
     <div class="work-order-edit-form" id="edit-form-${order.id}">
-      <div class="form-group"><label>Equipo:</label><input type="text" id="edit-equipo-${order.id}" value="${order.equipo || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
+      <div class="form-group"><label>Equipo:</label><input type="text" id="edit-equipo-${order.id}" value="${_h(order.equipo) || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
       <div class="form-group"><label>Fecha programada:</label><input type="date" id="edit-fecha-${order.id}" value="${order.fechaProgramada || order.fecha || ''}" ${localStorage.getItem('usuarioRol') === 'admin' ? '' : 'disabled class="opacity-muted"'}></div>
             <div class="form-group"><label>Prioridad:</label>${prioridadSelectHtml(order.id, order.prioridad)}</div>
-      <div class="form-group"><label>Descripción:</label><textarea id="edit-description-${order.id}">${order.descripcion || ''}</textarea></div>
-      <div class="form-group"><label>Operario:</label><input type="text" id="edit-operator-${order.id}" value="${order.operario || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
+      <div class="form-group"><label>Descripción:</label><textarea id="edit-description-${order.id}">${_h(order.descripcion) || ''}</textarea></div>
+      <div class="form-group"><label>Operario:</label><input type="text" id="edit-operator-${order.id}" value="${_h(order.operario) || ''}" ${esAdmin ? '' : 'readonly class="opacity-muted"'}></div>
       ${esAdmin ? `
       <div class="form-group"><label>Asignado a (usuario(s) sistema):</label><div id="edit-asignado-${order.id}" style="max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:6px"></div></div>
-      <div class="form-group"><label>Asignado a (externo / empresa):</label><input type="text" id="edit-asignado-ext-${order.id}" value="${order.asignadoAExterno || ''}" placeholder="Ej: Tecnicwater"></div>
+      <div class="form-group"><label>Asignado a (externo / empresa):</label><input type="text" id="edit-asignado-ext-${order.id}" value="${_h(order.asignadoAExterno) || ''}" placeholder="Ej: Tecnicwater"></div>
       ` : ''}
-      <div class="form-group"><label>Material empleado / Aclaraciones:</label><textarea id="edit-material-${order.id}" rows="3" placeholder="Material empleado o aclaraciones...">${order.material || ''}</textarea></div>
+      <div class="form-group"><label>Material empleado / Aclaraciones:</label><textarea id="edit-material-${order.id}" rows="3" placeholder="Material empleado o aclaraciones...">${_h(order.material) || ''}</textarea></div>
       <div class="edit-delete-buttons">
         <button class="button" onclick="saveWorkOrderChanges(${order.id})">Guardar Cambios</button>
         <button class="button" onclick="cancelWorkOrderEdit(${order.id})">Cancelar</button>
@@ -1796,7 +1800,7 @@ function updateAdminLists() {
 // Lista de recambios en modo lectura
 function generarListaRecambios(recambios) {
   return (recambios || []).map(r => `
-    <div class="spare-part-item"><span>${r.nombre}: ${r.cantidad} unidades</span></div>
+    <div class="spare-part-item"><span>${_h(r.nombre)}: ${_h(r.cantidad)} unidades</span></div>
   `).join('');
 }
 
@@ -1804,8 +1808,8 @@ function generarListaRecambios(recambios) {
 function generarFormularioRecambios(recambios, equipoIndex) {
   return (recambios || []).map((r, i) => `
     <div class="spare-part-item">
-      <input type="text"   id="recambio-nombre-${equipoIndex}-${i}"   value="${r.nombre}">
-      <input type="number" id="recambio-cantidad-${equipoIndex}-${i}" value="${r.cantidad}" min="0">
+      <input type="text"   id="recambio-nombre-${equipoIndex}-${i}"   value="${_h(r.nombre)}">
+      <input type="number" id="recambio-cantidad-${equipoIndex}-${i}" value="${_h(r.cantidad)}" min="0">
     </div>
   `).join('');
 }
@@ -1815,13 +1819,13 @@ function getSparePartsOptions(equipoName) {
   if (!window.equiposDb || !window.equiposDb.equiposGuardados) return '';
   const equipo = window.equiposDb.equiposGuardados.find(e => e && e.equipo === equipoName);
   if (!equipo || !equipo.recambios) return '';
-  return equipo.recambios.map(r => `<option value="${r.nombre}">${r.nombre}</option>`).join('');
+  return equipo.recambios.map(r => `<option value="${_h(r.nombre)}">${_h(r.nombre)}</option>`).join('');
 }
 
 // Recambios ya usados en un parte de trabajo
 function renderUsedSpareParts(spareParts) {
   if (!spareParts || !spareParts.length) return '';
-  return spareParts.map(p => `<div class="spare-part-item">${p.nombre}: ${p.cantidad} unidades</div>`).join('');
+  return spareParts.map(p => `<div class="spare-part-item">${_h(p.nombre)}: ${_h(p.cantidad)} unidades</div>`).join('');
 }
 
 let _filtroMantenimientosTexto = '';
@@ -1880,7 +1884,7 @@ async function actualizarListaMantenimientos() {
     div.dataset.id = m.id;
     div.innerHTML = `
       <div class="equipo-record-header" onclick="this.nextElementSibling.classList.toggle('eq-detail-open')">
-        <strong>${titulo}</strong>
+        <strong>${_h(titulo)}</strong>
         <span class="eq-model-tag">c/${m.periodicidad}d</span>
         <span class="eq-model-tag" style="color:${vencido ? 'var(--red)' : 'var(--green)'}">
           ${vencido ? '⚠ vencido' : '✓ ' + nextDate.toLocaleDateString()}
@@ -1888,12 +1892,12 @@ async function actualizarListaMantenimientos() {
         <span class="eq-chevron">›</span>
       </div>
       <div class="eq-detail">
-        <p><strong>Acción:</strong> ${m.accion}</p>
+        <p><strong>Acción:</strong> ${_h(m.accion)}</p>
         <p><strong>ID:</strong> ${m.id}</p>
-        <p><strong>Operario:</strong> ${m.operario || '—'}</p>
+        <p><strong>Operario:</strong> ${_h(m.operario) || '—'}</p>
         <p><strong>Periodicidad:</strong> ${m.periodicidad} días</p>
         <p><strong>Última ejecución:</strong> ${m.fechaUltimaEjecucion || m.fecha || '—'}</p>
-        <p><strong>Asignado a:</strong> ${_getAsignadosNombres(m).join(', ') || '<span class="opacity-muted">Sin asignar</span>'}</p>
+        <p><strong>Asignado a:</strong> ${_h(_getAsignadosNombres(m).join(', ')) || '<span class="opacity-muted">Sin asignar</span>'}</p>
         <p><strong>Próxima fecha:</strong> ${nextDate.toLocaleDateString()}</p>
         <p><strong>Ejecuciones registradas:</strong> ${(m.historial || []).length}</p>
         <div class="edit-delete-buttons">
@@ -1902,9 +1906,9 @@ async function actualizarListaMantenimientos() {
         </div>
         <div id="edit-${m.id}" class="edit-form" style="display:none;">
           <div class="form-group"><label>Última ejecución</label><input type="date" id="newDate-${m.id}" value="${m.fechaUltimaEjecucion || m.fecha || ''}"></div>
-          <div class="form-group"><label>Operario</label><input type="text" id="newOperator-${m.id}" value="${m.operario || ''}"></div>
-          <div class="form-group"><label>Equipo</label><input type="text" id="newEquipment-${m.id}" value="${m.equipo || ''}"></div>
-          <div class="form-group"><label>Acción</label><input type="text" id="newAction-${m.id}" value="${m.accion || ''}"></div>
+          <div class="form-group"><label>Operario</label><input type="text" id="newOperator-${m.id}" value="${_h(m.operario) || ''}"></div>
+          <div class="form-group"><label>Equipo</label><input type="text" id="newEquipment-${m.id}" value="${_h(m.equipo) || ''}"></div>
+          <div class="form-group"><label>Acción</label><input type="text" id="newAction-${m.id}" value="${_h(m.accion) || ''}"></div>
           <div class="form-group"><label>Periodicidad (días)</label><input type="number" id="newPeriod-${m.id}" value="${m.periodicidad || ''}"></div>
           <div class="form-group admin-only" id="bloque-asignado-${m.id}" style="display:none">
             <label>Asignado a (usuario sistema)</label>
@@ -1912,7 +1916,7 @@ async function actualizarListaMantenimientos() {
           </div>
           <div class="form-group admin-only" id="bloque-asignado-ext-${m.id}" style="display:none">
             <label>Asignado a (externo / empresa)</label>
-            <input type="text" id="newAsignadoExt-${m.id}" value="${m.asignadoAExterno || ''}" placeholder="Ej: Tecnicwater">
+            <input type="text" id="newAsignadoExt-${m.id}" value="${_h(m.asignadoAExterno) || ''}" placeholder="Ej: Tecnicwater">
           </div>
           <button class="button" onclick="guardarEdicionMantenimiento('${m.id}')">Guardar cambios</button>
         </div>
@@ -2055,7 +2059,7 @@ function _renderEquiposNav(listaDiv) {
         btn.innerHTML = `
           <div class="eq-familia-header" onclick="window._equiposNavIr('equipo','${fam.replace(/'/g,"\\'")}','${zona.replace(/'/g,"\\'")}')">
             <span class="eq-familia-icon">📍</span>
-            <span>${zona}</span>
+            <span>${_h(zona)}</span>
             <span class="eq-familia-count">${count} equipo(s)</span>
             <span class="eq-chevron">›</span>
           </div>`;
@@ -2075,7 +2079,7 @@ function _renderEquiposNav(listaDiv) {
     const back = document.createElement('div');
     back.className = 'eq-nav-back';
     back.innerHTML = `<button class="button back-button" onclick="window._equiposNavIr('zona','${fam.replace(/'/g,"\\'")}')">‹ Zonas</button>
-      <span class="eq-nav-breadcrumb">${fam} › ${zona}</span>`;
+      <span class="eq-nav-breadcrumb">${fam} › ${_h(zona)}</span>`;
     listaDiv.appendChild(back);
 
     filtrados.forEach(equipo => {
@@ -2086,8 +2090,8 @@ function _renderEquiposNav(listaDiv) {
       div.dataset.equipoIndex = idx;
       div.innerHTML = `
         <div class="equipo-record-header" onclick="this.nextElementSibling.classList.toggle('eq-detail-open')">
-          <strong>${equipo.equipo || ''}</strong>
-          <span class="eq-model-tag">${equipo.modelo || ''}</span>
+          <strong>${_h(equipo.equipo) || ''}</strong>
+          <span class="eq-model-tag">${_h(equipo.modelo) || ''}</span>
           <span class="eq-chevron">›</span>
         </div>
         <div class="eq-detail">
@@ -2102,13 +2106,13 @@ function _renderEquiposNav(listaDiv) {
           <div class="edit-delete-buttons">
             <button class="button" onclick="editarEquipo(${idx})">Editar</button>
             <button class="button" onclick="eliminarEquipo(${idx})">Eliminar</button>
-            <button class="button" onclick="exportarHistorialEquipo('${equipo.equipo || ''}')">📋 Exportar historial</button>
+            <button class="button" onclick="exportarHistorialEquipo('${_h(equipo.equipo) || ''}')">📋 Exportar historial</button>
           </div>
           <div class="edit-form" id="edit-equipo-${idx}">
-            <div class="form-group"><label>Familia</label><input type="text" id="familia-${idx}" value="${equipo.familia || ''}"></div>
-            <div class="form-group"><label>Zona</label><input type="text" id="zona-${idx}" value="${equipo.zona || ''}"></div>
-            <div class="form-group"><label>Equipo</label><input type="text" id="equipo-${idx}" value="${equipo.equipo || ''}"></div>
-            <div class="form-group"><label>Modelo</label><input type="text" id="modelo-${idx}" value="${equipo.modelo || ''}"></div>
+            <div class="form-group"><label>Familia</label><input type="text" id="familia-${idx}" value="${_h(equipo.familia) || ''}"></div>
+            <div class="form-group"><label>Zona</label><input type="text" id="zona-${idx}" value="${_h(equipo.zona) || ''}"></div>
+            <div class="form-group"><label>Equipo</label><input type="text" id="equipo-${idx}" value="${_h(equipo.equipo) || ''}"></div>
+            <div class="form-group"><label>Modelo</label><input type="text" id="modelo-${idx}" value="${_h(equipo.modelo) || ''}"></div>
             <div class="form-group">
               <label>Recambios Actuales:</label>
               <div id="recambios-list-${idx}">${generarFormularioRecambios(recambiosBase, idx)}</div>
@@ -2196,7 +2200,7 @@ function _renderMantsFicha(nombreEquipo) {
       ? '<span style="color:var(--red);font-size:0.75rem;margin-left:6px">⚠ VENCIDO</span>'
       : '<span style="color:var(--green);font-size:0.75rem;margin-left:6px">✓ Al día</span>';
     return `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:0.83rem">
-      <strong>${m.accion}</strong>${badge}<br>
+      <strong>${_h(m.accion)}</strong>${badge}<br>
       <span style="color:var(--text-muted)">Cada ${m.periodicidad} días · Última: ${m.fechaUltimaEjecucion || m.fecha} · ${m.tipo || 'preventivo'}</span>
     </div>`;
   }).join('');
@@ -2709,7 +2713,7 @@ async function _cargarOperariosCheckboxes(containerId, uidsActuales) {
       const nombre = u.nombre || u.email || uid;
       const checked = actuales.includes(uid) ? 'checked' : '';
       const sel = actuales.includes(uid) ? ' seleccionado' : '';
-      return `<label class="${sel}"><input type="checkbox" value="${uid}" data-nombre="${nombre}" ${checked}> ${nombre}</label>`;
+      return `<label class="${sel}"><input type="checkbox" value="${uid}" data-nombre="${_h(nombre)}" ${checked}> ${_h(nombre)}</label>`;
     }).join('') || '<p class="txt-muted-xs">Sin operarios disponibles</p>';
     const btnQuitar = items.length
       ? '<button type="button" class="asig-checkbox-clear" onclick="this.parentElement.querySelectorAll(\'input[type=checkbox]\').forEach(c=>c.checked=false);this.parentElement.querySelectorAll(\'label\').forEach(l=>l.classList.remove(\'seleccionado\'))">🗑 Sin asignar (quitar todos)</button>'
@@ -3040,7 +3044,7 @@ async function renderPanelAsignaciones() {
     const actuales = Array.isArray(uidsActuales) ? uidsActuales : (uidsActuales ? [uidsActuales] : []);
     return usuarios.map(u =>
       `<label style="display:flex;align-items:center;gap:4px;font-size:0.8rem;padding:1px 0">
-        <input type="checkbox" value="${u.uid}" data-nombre="${u.nombre}" ${actuales.includes(u.uid) ? 'checked' : ''}> ${u.nombre}
+        <input type="checkbox" value="${u.uid}" data-nombre="${_h(u.nombre)}" ${actuales.includes(u.uid) ? 'checked' : ''}> ${_h(u.nombre)}
       </label>`
     ).join('');
   }
@@ -3102,7 +3106,7 @@ async function renderPanelAsignaciones() {
     if (!items.length) return null;
     const sec = document.createElement('div');
     sec.style.marginBottom = '16px';
-    sec.innerHTML = `<p style="font-weight:600;margin-bottom:6px">${titulo} (${items.length})</p>`;
+    sec.innerHTML = `<p style="font-weight:600;margin-bottom:6px">${_h(titulo)} (${items.length})</p>`;
     const table = document.createElement('table');
     table.style.cssText = 'width:100%;border-collapse:collapse';
     table.innerHTML = `<thead><tr>
@@ -3124,7 +3128,7 @@ async function renderPanelAsignaciones() {
   barra.innerHTML = `
     <select id="masivo-operario" style="flex:1;font-size:0.85rem">
       <option value="">— Operario para asignación masiva —</option>
-      ${usuarios.map(u => `<option value="${u.uid}" data-nombre="${u.nombre}">${u.nombre}</option>`).join('')}
+      ${usuarios.map(u => `<option value="${u.uid}" data-nombre="${_h(u.nombre)}">${_h(u.nombre)}</option>`).join('')}
     </select>
     <button class="button button--sm" id="btn-asignar-masivo" style="white-space:nowrap">✔ Asignar seleccionados</button>
     <label style="font-size:0.82rem;display:flex;align-items:center;gap:4px">
@@ -3879,7 +3883,7 @@ function _mostrarHistorialEquipo(nombreEquipo, inputEl) {
     entries.map(e =>
       `<div class="eq-historial-entry">
         <span class="eq-historial-fecha">${e.fecha || ''}</span>
-        <span>${e.descripcion || ''}</span>
+        <span>${_h(e.descripcion) || ''}</span>
       </div>`
     ).join('');
   inputEl.parentElement.appendChild(panel);
@@ -4167,8 +4171,8 @@ function _sesionActiva(instId) {
   // Admin autenticado: acceso libre a cualquier instalación sin PIN
   const rol = localStorage.getItem('usuarioRol');
   if (user && !user.isAnonymous && rol === 'admin') return true;
-  // Operario: comprobar si ya validó PIN en este dispositivo
-  return localStorage.getItem('sesion_pin_' + instId) === 'ok';
+  // Cualquier usuario con sesión iniciada (el acceso real lo controlan las reglas de Firebase)
+  return !!(localStorage.getItem('usuarioUid') || (user && !user.isAnonymous));
 }
 function _guardarSesion(instId) {
   localStorage.setItem('sesion_pin_' + instId, 'ok');
@@ -4264,7 +4268,7 @@ async function cargarInstalaciones() {
           </svg>
         </div>
         <div class="inst-card__info">
-          <span class="inst-card__nombre" style="${pendiente ? 'color:var(--red)' : ''}">${pendiente ? '⚠️ ' : ''}${nombre}</span>
+          <span class="inst-card__nombre" style="${pendiente ? 'color:var(--red)' : ''}">${pendiente ? '⚠️ ' : ''}${_h(nombre)}</span>
           <span class="inst-card__estado">${esActiva ? '✓ Sesión activa' : 'Pulsa para acceder'}${pendiente ? ' · Trabajo pendiente' : ''}</span>
         </div>
         <div class="inst-card__arrow">›</div>`;
@@ -4302,15 +4306,7 @@ async function seleccionarInstalacion(id, meta) {
     return;
   }
 
-  // Pedir contraseña de la instalación
-  const pin = prompt(`Contraseña para "${nombre}":`);
-  if (pin === null) return; // cancelado
-
-  if (pin !== (meta.pin || '')) {
-    alert('Contraseña incorrecta');
-    return;
-  }
-
+  // Sin contraseña de instalación: el acceso lo controlan la cuenta y las reglas de Firebase
   _guardarSesion(id);
   localStorage.setItem('instalacionActiva', id);
   window.location.reload();
@@ -4324,8 +4320,6 @@ async function crearInstalacion() {
   const nombre = (input ? input.value : '').trim();
   if (!nombre) { alert('Escribe un nombre para la instalación'); return; }
 
-  const pinInst = prompt(`Contraseña de acceso para "${nombre}":`);
-  if (!pinInst || !pinInst.trim()) { alert('La contraseña no puede estar vacía'); return; }
 
   const id = nombre.toLowerCase()
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -4340,7 +4334,6 @@ async function crearInstalacion() {
 
     await realDb.ref(`instalaciones/${id}/meta`).set({
       nombre,
-      pin:      pinInst.trim(),
       creadaEn: new Date().toISOString()
     });
 
@@ -4366,7 +4359,7 @@ async function cargarInstalacionesAdmin() {
     ids.sort((a,b) => (data[a].meta.creadaEn||'').localeCompare(data[b].meta.creadaEn||''));
     contenedor.innerHTML = ids.map(id =>
       `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
-        <strong>${data[id].meta.nombre || id}</strong>
+        <strong>${_h(data[id].meta.nombre || id)}</strong>
         <span style="font-size:0.75rem;color:var(--text-muted);margin-left:8px">${id}</span>
       </div>`
     ).join('');
@@ -4413,13 +4406,13 @@ async function cargarUsuariosAdmin() {
       div.style.cssText = 'padding:10px 0;border-bottom:1px solid var(--border)';
       const estadoColor = u.estado === 'activo' ? 'var(--green)' : u.estado === 'pendiente' ? 'orange' : 'var(--red)';
       const instOpts = instIds.map(id =>
-        `<option value="${id}" ${(u.instalaciones||[]).includes(id) ? 'selected' : ''}>${instalaciones[id].meta.nombre || id}</option>`
+        `<option value="${id}" ${(u.instalaciones||[]).includes(id) ? 'selected' : ''}>${_h(instalaciones[id].meta.nombre || id)}</option>`
       ).join('');
       div.innerHTML = `
-        <strong>${u.nombre || u.email}</strong>
+        <strong>${_h(u.nombre || u.email)}</strong>
         <span style="font-size:0.75rem;color:${estadoColor};margin-left:8px">${u.estado || 'pendiente'}</span>
         <span style="font-size:0.75rem;color:var(--text-muted);margin-left:8px">${u.rol || 'operario'}</span>
-        <p style="font-size:0.78rem;color:var(--text-muted);margin:2px 0">${u.email || ''}</p>
+        <p style="font-size:0.78rem;color:var(--text-muted);margin:2px 0">${_h(u.email) || ''}</p>
         <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">
           <button class="button" style="font-size:0.78rem;padding:4px 10px" onclick="cambiarEstadoUsuario('${uid}','activo')">✓ Activar</button>
           <button class="button back-button" style="font-size:0.78rem;padding:4px 10px" onclick="cambiarEstadoUsuario('${uid}','bloqueado')">✗ Bloquear</button>
@@ -4501,7 +4494,8 @@ async function _obtenerAvisosVencidosUsuario() {
     const avisos = [];
     await Promise.all(instIds.map(async (instId) => {
       const leer = p => realDb.ref(`instalaciones/${instId}/${p}`).once('value').then(s => s.val());
-      const [nom, mp, wt, wa] = await Promise.all([leer('meta/nombre'), leer('mantenimientosPeriodicos'), leer('workOrdersTareas'), leer('workOrdersAverias')]);
+      const dato = k => (instId === INST() && (db[k] || []).length) ? db[k] : leer(k);
+      const [nom, mp, wt, wa] = await Promise.all([leer('meta/nombre'), dato('mantenimientosPeriodicos'), dato('workOrdersTareas'), dato('workOrdersAverias')]);
       const inst = { meta: { nombre: nom }, mantenimientosPeriodicos: mp, workOrdersTareas: wt, workOrdersAverias: wa };
       if (!nom && !mp && !wt && !wa) return;
       const nombreInst = (inst.meta && inst.meta.nombre) || instId;
@@ -4570,8 +4564,8 @@ async function abrirNotificaciones() {
     html += notifs.map(n => {
       const leida = !!(n.leidoPor && n.leidoPor[uid]);
       return `<div class="notif-item${leida ? '' : ' notif-item--noleida'}">
-        <p class="notif-item__fecha">${_formatFechaNotif(n.fecha)} · ${n.autor || 'Administración'}</p>
-        <p class="notif-item__mensaje">${n.mensaje}</p>
+        <p class="notif-item__fecha">${_formatFechaNotif(n.fecha)} · ${_h(n.autor) || 'Administración'}</p>
+        <p class="notif-item__mensaje">${_h(n.mensaje)}</p>
         <div class="notif-item__acciones">
           ${leida ? `<button class="button back-button" style="font-size:0.75rem;padding:4px 10px" onclick="eliminarNotificacionUsuario('${n.id}')">🗑️ Eliminar</button>`
                   : `<button class="button" style="font-size:0.75rem;padding:4px 10px" onclick="marcarNotificacionLeida('${n.id}')">✓ Marcar como leída</button>`}
@@ -4586,7 +4580,7 @@ async function abrirNotificaciones() {
   } else {
     html += avisos.map(a => `
       <div class="notif-item notif-item--noleida">
-        <p class="notif-item__mensaje">Tienes ${a.tipo === 'mantenimiento' ? 'un mantenimiento' : a.tipo === 'averia' ? 'una avería' : 'un trabajo'} asignado en <strong>${a.instalacion}</strong>${a.titulo ? ' — ' + a.titulo : ''}${a.personas ? ' · ' + (a.personas === 1 ? '👤 En solitario' : '👥 ' + a.personas + ' personas') : ''}${a.prioridad ? ' ' + prioridadBadgeHtml(a.prioridad) : ''}</p>
+        <p class="notif-item__mensaje">Tienes ${a.tipo === 'mantenimiento' ? 'un mantenimiento' : a.tipo === 'averia' ? 'una avería' : 'un trabajo'} asignado en <strong>${_h(a.instalacion)}</strong>${a.titulo ? ' — ' + _h(a.titulo) : ''}${a.personas ? ' · ' + (a.personas === 1 ? '👤 En solitario' : '👥 ' + a.personas + ' personas') : ''}${a.prioridad ? ' ' + prioridadBadgeHtml(a.prioridad) : ''}</p>
       </div>`).join('');
   }
 
@@ -4688,7 +4682,7 @@ async function cargarNotificacionesAdmin() {
       return `
         <div style="padding:8px 0;border-bottom:1px solid var(--border)">
           <p style="font-size:0.78rem;color:var(--text-muted);margin:0">${n.programada && (n.fecha || '') > new Date().toISOString() ? '⏰ Programada para ' : ''}${_formatFechaNotif(n.fecha)} · ${dest} · ${leidas} leída(s)</p>
-          <p style="margin:4px 0">${n.mensaje}</p>
+          <p style="margin:4px 0">${_h(n.mensaje)}</p>
           <button class="button back-button" style="font-size:0.75rem;padding:4px 10px;color:var(--red)" onclick="eliminarNotificacionGlobal('${id}')">🗑️ Eliminar para todos</button>
         </div>`;
     }).join('');
@@ -4739,7 +4733,7 @@ async function cargarSelectHistorialUsuarios() {
     const snap = await realDb.ref('usuarios').once('value');
     const usuarios = snap.val() || {};
     sel.innerHTML = '<option value="">— Selecciona un usuario —</option>' +
-      Object.entries(usuarios).map(([uid, u]) => `<option value="${uid}">${u.nombre || u.email || uid}</option>`).join('');
+      Object.entries(usuarios).map(([uid, u]) => `<option value="${uid}">${_h(u.nombre || u.email || uid)}</option>`).join('');
     if (actual) sel.value = actual;
   } catch(e) { console.warn('cargarSelectHistorialUsuarios error:', e); }
 }
@@ -4780,8 +4774,8 @@ async function cargarHistorialUsuarioAdmin(uid) {
 
     detalle.innerHTML = registros.map(r => `
       <div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:0.85rem">
-        <strong>${r.fecha || '(sin fecha)'}</strong> · ${ORIGEN_LABELS_HIST[r.origen] || r.origen} · ${r.instalacion}<br>
-        <span style="color:var(--text-muted)">${[r.equipo, r.descripcion].filter(Boolean).join(' — ')}</span>
+        <strong>${r.fecha || '(sin fecha)'}</strong> · ${ORIGEN_LABELS_HIST[r.origen] || r.origen} · ${_h(r.instalacion)}<br>
+        <span style="color:var(--text-muted)">${_h([r.equipo, r.descripcion].filter(Boolean).join(' — '))}</span>
       </div>`).join('');
   } catch(e) {
     resumen.innerHTML = '<p style="color:var(--red)">Error al cargar el historial</p>';
@@ -5088,7 +5082,7 @@ function renderMantenimientosSeparados(container) {
         const vencido  = esMantenimientoVencido(m);
         const div = document.createElement('div');
         div.className = 'pending-record' + (vencido ? ' overdue' : '');
-        div.innerHTML = `<strong>${m.accion}</strong> · c/${m.periodicidad}d · <span style="color:${vencido ? 'var(--red)' : 'var(--green)'}">${vencido ? '⚠ vencido' : nextDate.toLocaleDateString()}</span>`;
+        div.innerHTML = `<strong>${_h(m.accion)}</strong> · c/${m.periodicidad}d · <span style="color:${vencido ? 'var(--red)' : 'var(--green)'}">${vencido ? '⚠ vencido' : nextDate.toLocaleDateString()}</span>`;
         container.appendChild(div);
       });
   });
@@ -5107,7 +5101,7 @@ function renderMantenimientosSeparados(container) {
         const vencido = esMantenimientoVencido(m);
         const div = document.createElement('div');
         div.className = 'pending-record' + (vencido ? ' overdue' : '');
-        div.innerHTML = `<strong>${m.accion || 'Tarea'}</strong> · c/${m.periodicidad}d`;
+        div.innerHTML = `<strong>${_h(m.accion) || 'Tarea'}</strong> · c/${m.periodicidad}d`;
         container.appendChild(div);
       });
   }
@@ -5482,9 +5476,7 @@ document.addEventListener('DOMContentLoaded', async function() {
       showScreen('menuScreen');
       return;
     }
-      if (!_sesionActiva(inst)) { alert('Selecciona una instalación e introduce la contraseña'); return; }
-      _registrarListenersFirebase();
-      showScreen('menuScreen');
+         alert('Selecciona una instalación');
     });
     const _exitBtn = document.getElementById('exitBtn');
     if (_exitBtn) _exitBtn.addEventListener('click', () => window.close());
@@ -5636,7 +5628,7 @@ function renderAuditoriaActivos() {
 
     sec('📭 Equipos sin mantenimiento programado',
       sinMant.length
-        ? sinMant.map(e => `<p class="txt-secondary-sm">${e.equipo || '(sin nombre)'}</p>`).join('')
+        ? sinMant.map(e => `<p class="txt-secondary-sm">${_h(e.equipo) || '(sin nombre)'}</p>`).join('')
         : '<p class="txt-muted-sm">Todos tienen mantenimiento ✅</p>'),
 
     sec('⚠️ Posibles duplicados',
@@ -5650,14 +5642,14 @@ function renderAuditoriaActivos() {
         ? incompletos.map(e => {
             const f = [];
             if (!e.modelo) f.push('modelo'); if (!e.familia) f.push('familia'); if (!e.zona) f.push('zona');
-            return `<p class="txt-secondary-sm"><strong>${e.equipo || '?'}</strong>: sin ${f.join(', ')}</p>`;
+            return `<p class="txt-secondary-sm"><strong>${_h(e.equipo) || '?'}</strong>: sin ${f.join(', ')}</p>`;
           }).join('')
         : '<p class="txt-muted-sm">Todos completos ✅</p>'),
 
     sec('🏥 Índice de salud',
       `<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:6px">Equipo · Estado · Correctivos · Vencidos · Duplicados</div>` +
       salud.map(e =>
-        `<p class="txt-secondary-sm">${e.s} <strong>${e.nombre}</strong> · C:${e.c} V:${e.v} D:${e.d}</p>`
+        `<p class="txt-secondary-sm">${e.s} <strong>${_h(e.nombre)}</strong> · C:${e.c} V:${e.v} D:${e.d}</p>`
       ).join(''))
   ].join('');
 }
@@ -5720,20 +5712,20 @@ function renderCentroOperativo() {
     // Estado instalación
     sec('🏭 Estado de la instalación',
       items.filter(i => i.diffDias < 0).slice(0, 5).map(i =>
-        `<p style="font-size:0.83rem;margin:3px 0;color:var(--red)"><strong>${i.equipo}</strong> — ${i.accion} (${Math.abs(i.diffDias)}d retraso)</p>`
+        `<p style="font-size:0.83rem;margin:3px 0;color:var(--red)"><strong>${_h(i.equipo)}</strong> — ${_h(i.accion)} (${Math.abs(i.diffDias)}d retraso)</p>`
       ).join('') +
       (nVencidos === 0 ? '<p class="txt-secondary-sm">Sin vencidos ✅</p>' : '') +
       (nVencidos > 5 ? `<p style="font-size:0.78rem;color:var(--text-muted)">...y ${nVencidos - 5} más. Ver Planificación.</p>` : '')
     ),
 
     // Actividad del usuario
-    sec(`👤 Mi actividad — ${nombre}`,
+    sec(`👤 Mi actividad — ${_h(nombre)}`,
       `<p style="font-size:0.8rem;color:var(--text);margin:0 0 6px">
         Creados: <strong>${misCreadosRaw.length}</strong> &nbsp;·&nbsp; Completados: <strong>${misCompletados.length}</strong>
       </p>` +
       (acciones.length
         ? acciones.map(a =>
-            `<p style="font-size:0.82rem;margin:3px 0"><span class="opacity-muted">${fmt(a.fecha)}</span> · <strong>${a.tipo}</strong> ${a.equipo || ''} — ${a.desc.slice(0,50)}${a.desc.length>50?'…':''}</p>`
+            `<p style="font-size:0.82rem;margin:3px 0"><span class="opacity-muted">${fmt(a.fecha)}</span> · <strong>${a.tipo}</strong> ${_h(a.equipo) || ''} — ${a.desc.slice(0,50)}${a.desc.length>50?'…':''}</p>`
           ).join('')
         : '<p class="txt-secondary-sm">Sin actividad registrada todavía</p>')
     ),
@@ -6002,8 +5994,8 @@ function renderPlanificacion() {
       <p style="font-weight:700;margin:0 0 8px">${title}</p>${html}</div>`;
 
   const filaSimple = i => {
-    const asig = _getAsignadosNombres(i).length ? `<span style="font-size:0.78rem;opacity:0.7"> · 👤 ${_getAsignadosNombres(i).join(', ')}</span>` : '';
-    return `<p class="txt-secondary-sm"><strong>${i.equipo}</strong> — ${i.accion}${asig}</p>`;
+    const asig = _getAsignadosNombres(i).length ? `<span style="font-size:0.78rem;opacity:0.7"> · 👤 ${_h(_getAsignadosNombres(i).join(', '))}</span>` : '';
+    return `<p class="txt-secondary-sm"><strong>${_h(i.equipo)}</strong> — ${_h(i.accion)}${asig}</p>`;
   };
 
   const filaVencido = i => {
@@ -6014,7 +6006,7 @@ function renderPlanificacion() {
     const avisoCorrectivo = tieneCorrectivo
       ? `<span style="font-size:0.75rem;color:#f0a500;margin-left:6px">⚠ Correctivo abierto</span>` : '';
     return `<p style="font-size:0.83rem;margin:4px 0;color:var(--text)">
-      ${icono} <strong>${i.equipo}</strong> — ${i.accion}
+      ${icono} <strong>${_h(i.equipo)}</strong> — ${_h(i.accion)}
       <span style="opacity:0.65;font-size:0.8rem">(${dias}d retraso)</span>${avisoCorrectivo}</p>`;
   };
 
@@ -6487,7 +6479,7 @@ async function cuadranteAsignarTarde(btn) {
     if (inp && inp.value) fecha = inp.value;
     if (!fecha) { const g = document.getElementById('fechaMantenimiento'); if (g && g.value) fecha = g.value; }
     if (!fecha) fecha = _cqFechaLocal();
-    const q = await cuadranteQuienDeTarde(fecha);
+    const q = await (window._quienDeTardeDia ? window._quienDeTardeDia(fecha) : cuadranteQuienDeTarde(fecha));
     if (!q) return alert(`No hay cuadrante guardado con turno de tarde para la semana de ${fecha}.`);
     const chk = q.uid ? [...cont.querySelectorAll('input[type="checkbox"]')].find(c => c.value === q.uid) : null;
     if (!chk) return alert(`${q.nombre} está de tarde esa semana, pero no está vinculado a un usuario de la app. Vincúlalo en Cuadrante → Configuración.`);
@@ -6548,7 +6540,7 @@ function _cqEditarCelda(opId, iso) {
       const idx = Math.round((cqDate(iso).getTime() - Date.UTC(doc.year, 0, 1)) / CQ_MS), autor = (typeof _sesionAutor === 'function' ? _sesionAutor() : {}) || {};
       await realDb.ref().update({ [`${CQ_BASE}/anios/${doc.year}/dias/${opId}/${idx}`]: nuevo,
         [`${CQ_BASE}/anios/${doc.year}/ajustes/a${Date.now()}`]: { operario: opId, fecha: iso, antes: actual, despues: nuevo, motivo, por: autor.nombre || '', cuando: new Date().toISOString() } });
-      doc.dias[opId][idx] = nuevo; closePopup(document.getElementById('cqEdOk')); _cqMsg(`Turno cambiado: ${op.nombre} ${iso} ${actual} → ${nuevo}.`, true); _cqRenderConsulta();
+      doc.dias[opId][idx] = nuevo; if (window._relevoDia) window._relevoDia(true); closePopup(document.getElementById('cqEdOk')); _cqMsg(`Turno cambiado: ${op.nombre} ${iso} ${actual} → ${nuevo}.`, true); _cqRenderConsulta();
     } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
   });
 }
@@ -6940,6 +6932,7 @@ function _cqMontar() {
           <label class="cq-campo">Mes<select id="cqMes">${CQ_MESES.map((m, i) => `<option value="${i}">${m}</option>`).join('')}</select></label>
           <label class="cq-campo">Operario<select id="cqFiltro"><option value="">Todos</option></select></label>
           <button type="button" class="button cq-solo-admin" data-act="exportar">⬇ Excel</button>
+          <button type="button" class="button cq-solo-admin" data-act="exportar-mes">⬇ Excel del mes</button>
           <button type="button" class="button cq-solo-admin" id="cqBtnPub" data-act="publicar"></button>
         </div>
         <div id="cqVista"></div><div id="cqResumen"></div><div id="cqHorasAnio"></div>
@@ -7087,13 +7080,25 @@ function _cqMontar() {
 
   function textoLista() {
     const acep = Object.values(cp.items).filter(i => est(i) === 'aceptada').sort((a, b) => (b.urgente ? 1 : 0) - (a.urgente ? 1 : 0));
-    return '🛒 Lista de la compra\n' + acep.map(i => `- ${i.nombre}${i.cantidad ? ' (' + i.cantidad + ')' : ''}${i.urgente ? ' ⚠ URGENTE' : ''}`).join('\n');
+    return '🛒 Lista de la compra\n' + acep.map(i => `- ${_h(i.nombre)}${i.cantidad ? ' (' + i.cantidad + ')' : ''}${i.urgente ? ' ⚠ URGENTE' : ''}`).join('\n');
   }
 
   function pedirCambios(i) {
-    const n = prompt('Producto:', i.nombre); if (n === null) return null;
-    const c = prompt('Cantidad:', i.cantidad || ''); if (c === null) return null;
-    return { nombre: n.trim() || i.nombre, cantidad: c.trim() };
+    return new Promise(resolve => {
+      const ov = document.createElement('div');
+      ov.style.cssText = 'position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:16px';
+      ov.innerHTML = `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);padding:18px;max-width:380px;width:100%">
+        <h3 style="margin:0 0 10px">Editar artículo</h3>
+        <label style="display:block;font-size:.9rem;color:var(--text-secondary)">Producto<input type="text" id="cpEdNom" maxlength="80" style="width:100%;box-sizing:border-box;margin:4px 0 10px;min-height:42px"></label>
+        <label style="display:block;font-size:.9rem;color:var(--text-secondary)">Cantidad<input type="text" id="cpEdCan" maxlength="30" style="width:100%;box-sizing:border-box;margin:4px 0 10px;min-height:42px"></label>
+        <div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="button" id="cpEdNo">Cancelar</button><button type="button" class="button" id="cpEdSi">Guardar</button></div></div>`;
+      document.body.appendChild(ov);
+      ov.querySelector('#cpEdNom').value = i.nombre || '';
+      ov.querySelector('#cpEdCan').value = i.cantidad || '';
+      const fin = v => { ov.remove(); resolve(v); };
+      ov.querySelector('#cpEdNo').onclick = () => fin(null);
+      ov.querySelector('#cpEdSi').onclick = () => { const n = ov.querySelector('#cpEdNom').value.trim(); if (!n) return; fin({ nombre: n, cantidad: ov.querySelector('#cpEdCan').value.trim() }); };
+    });
   }
 
   async function click(ev) {
@@ -7115,7 +7120,7 @@ function _cqMontar() {
       } else if (act === 'aceptar' || act === 'aceptar-edit' || act === 'editar') {
         if (!i) return;
         let nom = i.nombre, can = i.cantidad || '';
-        if (act !== 'aceptar') { const r = pedirCambios(i); if (!r) return; nom = r.nombre; can = r.cantidad; }
+        if (act !== 'aceptar') { const r = await pedirCambios(i); if (!r) return; nom = r.nombre; can = r.cantidad; }
         const cambio = nom !== i.nombre || can !== (i.cantidad || '');
         const upd = { nombre: nom, cantidad: can };
         if (act !== 'editar') { upd.estado = 'aceptada'; upd.resueltoPor = nombre(); upd.resueltoEn = now; upd.motivo = null; }
@@ -7297,7 +7302,8 @@ function _cqMontar() {
 
   /* ── Relevo semanal: trabajos del turno de tarde sin completar pasan a la nueva persona de tarde ── */
   let ultimoDia = '';
-  async function relevoTurno() {
+    async function relevoTurno() {
+    if (typeof window._relevoDia === 'function') return window._relevoDia();
     try {
       if (typeof auth === 'undefined' || !auth.currentUser || INST() === 'default') return;
       const hoy = _cqFechaLocal(), clave = hoy + '|' + INST(); if (ultimoDia === clave) return;
@@ -7361,4 +7367,438 @@ function _cqMontar() {
     pintar(); setTimeout(pintar, 1500);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
+})();
+
+/* ===== FUSIÓN SEGURA DE PARTES Y MANTENIMIENTOS (añadir al final de app.js) =====
+   Evita que dos usuarios se pisen: en vez de reemplazar la lista completa, aplica solo
+   lo que ha cambiado cada uno (añadidos, modificados y eliminados) sobre la versión actual.
+   Para desactivarlo sin quitar el código: localStorage.setItem('sinFusion', '1') */
+(function () {
+  if (typeof firebase === 'undefined' || !firebase.database || !firebase.database.Reference) return;
+  const RP = firebase.database.Reference.prototype;
+  const origSet = RP.set, origOn = RP.on;
+  const NODOS = /\/instalaciones\/[^/]+\/(workOrdersTareas|workOrdersAverias|workOrders|mantenimientosPeriodicos)$/;
+  const baseServidor = {};
+  const lista = v => (Array.isArray(v) ? v : (v && typeof v === 'object' ? Object.values(v) : [])).filter(Boolean);
+  const ruta = ref => { try { return decodeURIComponent(new URL(ref.toString()).pathname); } catch (e) { return ''; } };
+  const conId = arr => arr.every(x => x.id !== undefined && x.id !== null);
+
+  function fusionar(actual, nuevo, base) {
+    const mapa = a => new Map(a.map(x => [String(x.id), x]));
+    const mA = mapa(actual), mB = mapa(base), mN = mapa(nuevo), res = new Map(mA);
+    mB.forEach((v, id) => { if (!mN.has(id)) res.delete(id); });                       // eliminados por este usuario
+    mN.forEach((v, id) => {
+      if (!mB.has(id)) res.set(id, v);                                                  // añadidos por este usuario
+      else if (JSON.stringify(v) !== JSON.stringify(mB.get(id)) && res.has(id)) res.set(id, v); // modificados (sin resucitar lo borrado por otro)
+    });
+    return [...res.values()];
+  }
+
+  RP.on = function (tipo, cb) {
+    const p = ruta(this);
+    if (tipo === 'value' && typeof cb === 'function' && NODOS.test(p)) {
+      const args = Array.prototype.slice.call(arguments);
+      args[1] = function (snap) { baseServidor[p] = lista(snap.val()); return cb.apply(this, arguments); };
+      return origOn.apply(this, args);
+    }
+    return origOn.apply(this, arguments);
+  };
+
+  RP.set = function (valor) {
+    const p = ruta(this);
+    const nuevo = valor === null || valor === undefined ? [] : (Array.isArray(valor) ? valor.filter(Boolean) : null);
+    if (localStorage.getItem('sinFusion') === '1' || !NODOS.test(p) || !nuevo || !baseServidor[p] || !conId(nuevo) || !conId(baseServidor[p])) {
+      return origSet.apply(this, arguments);
+    }
+    const base = baseServidor[p];
+    return this.transaction(cur => { const r = fusionar(lista(cur), nuevo, base); return r.length ? r : null; }).then(() => undefined);
+  };
+  window._fusionarListas = fusionar;
+})();
+
+/* ===== AVISO DE CONEXIÓN (añadir al final de app.js) ===== */
+(function () {
+  if (typeof firebase === 'undefined' || !firebase.database) return;
+  let temporizador = null;
+  function barra() {
+    let b = document.getElementById('avisoConexion');
+    if (!b) {
+      b = document.createElement('div'); b.id = 'avisoConexion';
+      b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:1003;display:none;padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px));background:#b7791f;color:#fff;text-align:center;font-weight:700;font-size:.9rem;box-shadow:0 -2px 8px rgba(0,0,0,.4)';
+      b.textContent = '📡 Sin conexión: los cambios se guardarán al recuperarla. No cierres la app hasta entonces.';
+      document.body.appendChild(b);
+    }
+    return b;
+  }
+  function iniciar() {
+    try {
+      firebase.database().ref('.info/connected').on('value', s => {
+        clearTimeout(temporizador);
+        if (s.val() === true) barra().style.display = 'none';
+        else temporizador = setTimeout(() => { barra().style.display = 'block'; }, 4000);
+      });
+    } catch (e) { console.warn('Aviso de conexión:', e); }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
+})();
+
+/* ===== CAMBIOS DE TURNO: peticiones entre compañeros, aprobadas por administración (añadir al final de app.js) ===== */
+(function () {
+  const CSS = `
+#cambiosTurnoScreen .ct-sec{margin:16px 0 8px;font-weight:700;font-size:1rem}
+#cambiosTurnoScreen .ct-nota{font-size:.92rem;color:var(--text-secondary);margin:8px 0;background:var(--bg-card);border-left:4px solid var(--blue-dim);padding:10px 12px;border-radius:var(--radius-md)}
+#cambiosTurnoScreen .ct-form{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin:0 0 14px}
+#cambiosTurnoScreen .ct-form label{display:flex;flex-direction:column;font-size:.85rem;color:var(--text-secondary);gap:4px;flex:1 1 140px;min-width:0}
+#cambiosTurnoScreen .ct-form input,#cambiosTurnoScreen .ct-form select{min-height:42px;width:100%;box-sizing:border-box}
+#cambiosTurnoScreen .ct-item{padding:12px;margin:0 0 10px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);line-height:1.4}
+#cambiosTurnoScreen .ct-item small{display:block;color:var(--text-muted);font-size:.82rem}
+#cambiosTurnoScreen .ct-acc{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+#cambiosTurnoScreen .ct-tag{font-size:.7rem;font-weight:700;color:#fff;padding:2px 8px;border-radius:8px;margin-left:6px;white-space:nowrap}
+#cambiosTurnoScreen .ct-prev{font-size:.85rem;color:var(--text-secondary);margin-top:6px}
+#cambiosTurnoScreen .ct-msg{min-height:20px;font-size:.88rem;margin:0 0 8px}
+#cambiosTurnoScreen .ct-vacio{font-size:.9rem;color:var(--text-muted);margin:6px 0}`;
+  const ETQ = {
+    pendiente_companero: ['ESPERA A TU COMPAÑERO', '#b7791f'], pendiente_admin: ['PENDIENTE DE ADMINISTRACIÓN', '#b7791f'],
+    aprobado: ['APROBADO', '#2e7d32'], rechazado_companero: ['RECHAZADO POR EL COMPAÑERO', '#c0392b'],
+    rechazado: ['NO APROBADO', '#c0392b'], cancelado: ['CANCELADO', '#666']
+  };
+  const CAMBIABLES = ['M', 'T'];
+  const ct = { items: {}, ref: null, cfg: null };
+  const admin = () => localStorage.getItem('usuarioRol') === 'admin';
+  const miUid = () => (auth.currentUser && auth.currentUser.uid) || localStorage.getItem('usuarioUid') || '';
+  const miNombre = () => localStorage.getItem('usuarioNombre') || 'Usuario';
+  const esc = s => _cqEsc(String(s == null ? '' : s));
+  const el = id => document.getElementById(id);
+  const fmt = iso => String(iso || '').slice(0, 10).split('-').reverse().join('/');
+  function msg(t, ok) {
+    const m = el('ctMsg'); if (!m) return;
+    m.textContent = t; m.style.color = ok ? 'var(--green)' : 'var(--red)';
+    clearTimeout(msg._t); msg._t = setTimeout(() => { m.textContent = ''; }, 6000);
+  }
+
+  /* ── Lectura de datos del cuadrante (siempre frescos, sin tocar la caché del cuadrante) ── */
+  async function cfgFresca() { const c = await _cqRef('config').once('value'); return c.val() ? _cqNormalizarConfig(c.val()) : null; }
+  async function docFresco(y) { const s = await _cqRef('anios/' + y).once('value'); const d = s.val(); return d ? _cqNormalizarDoc(d) : null; }
+  function resolutor() {
+    let cfg; const docs = {};
+    return async function (iso) {
+      if (cfg === undefined) cfg = await cfgFresca().catch(() => null);
+      for (let k = 0; k < 8; k++) {
+        const f = cqIso(new Date(cqDate(iso).getTime() + k * CQ_MS)), y = parseInt(f.slice(0, 4), 10);
+        if (!(y in docs)) docs[y] = await docFresco(y).catch(() => null);
+        const doc = docs[y]; if (!doc) continue;
+        const o = (doc.operarios || []).find(op => _cqCodigo(doc, op.id, f) === 'T');
+        if (o) return { id: o.id, nombre: o.nombre, uid: _cqUidDe(cfg || {}, o.id) || o.uid || '', fecha: f };
+      }
+      return null;
+    };
+  }
+  window._quienDeTardeDia = iso => resolutor()(iso);
+
+  /* ── Los trabajos marcados «De tarde» siguen a quien está de tarde ese día ── */
+  let ultimo = 0;
+  async function relevoDia(forzar) {
+    try {
+      if (typeof auth === 'undefined' || !auth.currentUser || INST() === 'default') return;
+      if (!forzar && Date.now() - ultimo < 600000) return;
+      ultimo = Date.now();
+      const hoy = _cqFechaLocal(), quien = resolutor(), base = `instalaciones/${INST()}`; let n = 0;
+      for (const k of ['workOrdersTareas', 'workOrdersAverias', 'mantenimientosPeriodicos']) {
+        const arr = db[k] || [];
+        for (let i = 0; i < arr.length; i++) {
+          const r = arr[i]; if (!r || r.asignadoATurno !== 'T') continue;
+          let f;
+          if (k === 'mantenimientosPeriodicos') { try { f = calcularProximaFecha(r).toISOString().slice(0, 10); } catch (e) { continue; } }
+          else f = String(r.fechaProgramada || r.fecha || '').slice(0, 10);
+          const q = await quien(f && f > hoy ? f : hoy); if (!q || !q.uid) continue;
+          const uids = _getAsignadosUids(r); if (uids.length === 1 && uids[0] === q.uid) continue;
+          const sid = await realDb.ref(`${base}/${k}/${i}/id`).once('value'); if (String(sid.val()) !== String(r.id)) continue;
+          await realDb.ref(`${base}/${k}/${i}`).update({ asignadoAUids: [q.uid], asignadoANombres: [q.nombre], asignadoAExterno: '' });
+          r.asignadoAUids = [q.uid]; r.asignadoANombres = [q.nombre]; r.asignadoAExterno = ''; n++;
+        }
+      }
+      if (n) { await saveToLocalStorage(); if (typeof updateNotificationIcons === 'function') updateNotificationIcons(); }
+    } catch (e) { console.warn('Relevo por turno:', e); }
+  }
+  window._relevoDia = relevoDia;
+
+  /* ── Vista previa y aplicación de un intercambio (solo administración) ── */
+  function diasDe(desde, hasta) { const o = []; for (let t = cqDate(desde).getTime(); t <= cqDate(hasta).getTime(); t += CQ_MS) o.push(cqIso(new Date(t))); return o; }
+  async function vistaPrevia(opA, opB, desde, hasta) {
+    const y = parseInt(desde.slice(0, 4), 10);
+    if (hasta.slice(0, 4) !== String(y)) throw new Error('El cambio debe estar dentro del mismo año.');
+    if (hasta < desde) throw new Error('La fecha «hasta» no puede ser anterior a «desde».');
+    const doc = await docFresco(y); if (!doc) throw new Error(`No hay cuadrante guardado para ${y}.`);
+    const cambios = [], omitidos = [];
+    diasDe(desde, hasta).forEach(f => {
+      const a = _cqCodigo(doc, opA, f), b = _cqCodigo(doc, opB, f);
+      if (a === b) { omitidos.push({ fecha: f, razon: 'mismo turno' }); return; }
+      if (!CAMBIABLES.includes(a) || !CAMBIABLES.includes(b)) { omitidos.push({ fecha: f, razon: `no es mañana/tarde (${a || '–'} / ${b || '–'})` }); return; }
+      cambios.push({ fecha: f, a, b });
+    });
+    return { y, doc, cambios, omitidos };
+  }
+  async function aplicar(opA, opB, desde, hasta, motivo) {
+    const p = await vistaPrevia(opA, opB, desde, hasta);
+    if (!p.cambios.length) throw new Error('No hay ningún día en el que se pueda intercambiar mañana por tarde.');
+    const upd = {}, ts = Date.now(), autor = _sesionAutor() || {}, cuando = new Date().toISOString(), idxDe = f => Math.round((cqDate(f).getTime() - Date.UTC(p.y, 0, 1)) / CQ_MS);
+    p.cambios.forEach((c, k) => {
+      const idx = idxDe(c.fecha), aj = (op, antes, despues) => ({ operario: op, fecha: c.fecha, antes, despues, motivo: motivo || 'Cambio de turno', por: autor.nombre || '', cuando });
+      upd[`${CQ_BASE}/anios/${p.y}/dias/${opA}/${idx}`] = c.b;
+      upd[`${CQ_BASE}/anios/${p.y}/dias/${opB}/${idx}`] = c.a;
+      upd[`${CQ_BASE}/anios/${p.y}/ajustes/a${ts}_${k}a`] = aj(opA, c.a, c.b);
+      upd[`${CQ_BASE}/anios/${p.y}/ajustes/a${ts}_${k}b`] = aj(opB, c.b, c.a);
+    });
+    await realDb.ref().update(upd);
+    const local = typeof _cq !== 'undefined' && _cq.docs && _cq.docs[p.y];
+    if (local) p.cambios.forEach(c => { const idx = idxDe(c.fecha); if (local.dias[opA]) local.dias[opA][idx] = c.b; if (local.dias[opB]) local.dias[opB][idx] = c.a; });
+    relevoDia(true);
+    return p;
+  }
+  const resumen = p => p.cambios.length + ' día' + (p.cambios.length === 1 ? '' : 's') + ' a intercambiar' + (p.omitidos.length ? ` · ${p.omitidos.length} sin cambio (${p.omitidos.slice(0, 4).map(o => fmt(o.fecha) + ': ' + o.razon).join('; ')}${p.omitidos.length > 4 ? '…' : ''})` : '');
+  function avisar(uids, texto) {
+    if (!admin()) return;
+    const dest = [...new Set(uids.filter(Boolean))]; if (!dest.length) return;
+    realDb.ref('notificaciones').push({ mensaje: texto, fecha: new Date().toISOString(), autor: miNombre(), destinatarios: dest }).catch(() => {});
+  }
+  const rango = r => `${fmt(r.desde)}${r.hasta !== r.desde ? ' – ' + fmt(r.hasta) : ''}`;
+
+  /* ── Pantalla ── */
+  function opciones(excluirUid) {
+    const ops = ((ct.cfg && ct.cfg.operarios) || []).filter(o => o.uid && o.uid !== excluirUid);
+    return ops.map(o => `<option value="${esc(o.id)}" data-uid="${esc(o.uid)}">${esc(o.nombre)}</option>`).join('');
+  }
+  function miOperario() { return ((ct.cfg && ct.cfg.operarios) || []).find(o => o.uid && o.uid === miUid()) || null; }
+
+  function render() {
+    const host = el('ctContenido'); if (!host) return;
+    const yo = miUid(), adm = admin(), mio = miOperario();
+    const lista = Object.entries(ct.items).map(([id, v]) => ({ id, ...v })).sort((a, b) => (b.creado || '').localeCompare(a.creado || ''));
+    const fila = (r, acciones, extra) => `<div class="ct-item"><b>${esc(r.solicitanteNombre)} ⇄ ${esc(r.companeroNombre)}</b>
+      <span class="ct-tag" style="background:${(ETQ[r.estado] || ['', '#666'])[1]}">${(ETQ[r.estado] || [r.estado])[0]}</span>
+      <small>${rango(r)}${r.motivo ? ' · ' + esc(r.motivo) : ''}</small>${r.motivoRechazo ? `<small>Motivo: ${esc(r.motivoRechazo)}</small>` : ''}${r.directo ? '<small>Cambio directo de administración</small>' : ''}
+      ${extra || ''}${acciones ? `<div class="ct-acc">${acciones}</div>` : ''}</div>`;
+    const btn = (act, txt, id) => `<button type="button" class="button" data-act="${act}" data-id="${id}">${txt}</button>`;
+    const sec = (t, arr, vacio, fn) => `<div class="ct-sec">${t} (${arr.length})</div>${arr.length ? arr.map(fn).join('') : `<p class="ct-vacio">${vacio}</p>`}`;
+    let h = '';
+    if (!adm) {
+      h += mio ? `<div class="ct-sec">Pedir un cambio</div><p class="ct-nota">Eliges con quién cambias y las fechas. Tu compañero debe aceptarlo y después lo aprueba administración. Solo se intercambian días de mañana y tarde.</p>
+        <div class="ct-form"><label>Cambio con<select id="ctComp">${opciones(yo)}</select></label><label>Desde<input type="date" id="ctDesde"></label><label>Hasta<input type="date" id="ctHasta"></label>
+        <label>Motivo (opcional)<input type="text" id="ctMotivo" maxlength="100"></label><button type="button" class="button" data-act="enviar">Enviar petición</button></div>`
+        : '<p class="ct-nota">Tu usuario todavía no está vinculado a un operario del cuadrante. Pide a administración que lo vincule (Cuadrante → Configuración).</p>';
+      const entrantes = lista.filter(r => r.estado === 'pendiente_companero' && r.companeroUid === yo);
+      h += sec('Peticiones que te piden aceptar', entrantes, 'Nadie te ha pedido ningún cambio.', r => fila(r, btn('aceptar', '✅ Aceptar', r.id) + btn('rechazar-comp', '❌ Rechazar', r.id)));
+      const mias = lista.filter(r => r.solicitanteUid === yo).slice(0, 12);
+      h += sec('Mis peticiones', mias, 'Todavía no has pedido ningún cambio.', r => fila(r, ['pendiente_companero', 'pendiente_admin'].includes(r.estado) ? btn('cancelar', 'Cancelar petición', r.id) : ''));
+    } else {
+      h += `<div class="ct-sec">Cambio directo (administración)</div><p class="ct-nota">Para cambios ya acordados. Se aplican al instante: se intercambian los días de mañana y tarde entre los dos operarios.</p>
+        <div class="ct-form"><label>Operario A<select id="ctA">${((ct.cfg && ct.cfg.operarios) || []).map(o => `<option value="${esc(o.id)}">${esc(o.nombre)}</option>`).join('')}</select></label>
+        <label>Operario B<select id="ctB">${((ct.cfg && ct.cfg.operarios) || []).map(o => `<option value="${esc(o.id)}">${esc(o.nombre)}</option>`).join('')}</select></label>
+        <label>Desde<input type="date" id="ctDesde"></label><label>Hasta<input type="date" id="ctHasta"></label><label>Motivo (opcional)<input type="text" id="ctMotivo" maxlength="100"></label>
+        <button type="button" class="button" data-act="directo">Aplicar cambio</button></div>`;
+      const porAprobar = lista.filter(r => r.estado === 'pendiente_admin');
+      h += sec('🔔 Por aprobar', porAprobar, 'No hay cambios pendientes ✅', r => fila(r, btn('aprobar', '✅ Aprobar y aplicar', r.id) + btn('rechazar', '❌ No aprobar', r.id), `<div class="ct-prev" data-prev="${r.id}">Calculando vista previa…</div>`));
+      const resto = lista.filter(r => !['pendiente_admin'].includes(r.estado)).slice(0, 15);
+      h += sec('Historial reciente', resto, 'Sin movimientos todavía.', r => fila(r, ['aprobado', 'rechazado', 'rechazado_companero', 'cancelado'].includes(r.estado) ? btn('borrar', '🗑 Quitar', r.id) : ''));
+    }
+    host.innerHTML = h;
+    if (adm) lista.filter(r => r.estado === 'pendiente_admin').forEach(async r => {
+      const d = host.querySelector(`[data-prev="${r.id}"]`); if (!d) return;
+      try { d.textContent = 'Vista previa: ' + resumen(await vistaPrevia(r.solicitanteOp, r.companeroOp, r.desde, r.hasta)); } catch (e) { d.textContent = 'Vista previa no disponible: ' + e.message; }
+    });
+    actualizarContador();
+  }
+
+  async function click(ev) {
+    const t = ev.target.closest('[data-act]'); if (!t) return;
+    const act = t.dataset.act, id = t.dataset.id, r = ct.items[id], now = new Date().toISOString(), ref = id ? realDb.ref('cambiosTurno/' + id) : null;
+    try {
+      if (act === 'enviar') {
+        const mio = miOperario(), sel = el('ctComp'), opc = sel && sel.selectedOptions[0];
+        const desde = el('ctDesde').value, hasta = el('ctHasta').value || desde;
+        if (!mio) return msg('Tu usuario no está vinculado a un operario del cuadrante.', false);
+        if (!opc) return msg('Elige con quién quieres cambiar.', false);
+        if (!desde) return msg('Indica la fecha del cambio.', false);
+        if (hasta < desde) return msg('La fecha «hasta» no puede ser anterior a «desde».', false);
+        if (desde.slice(0, 4) !== hasta.slice(0, 4)) return msg('El cambio debe estar dentro del mismo año.', false);
+        if (desde < _cqFechaLocal()) return msg('Las fechas deben ser de hoy en adelante. Para días pasados, habla con administración.', false);
+        await realDb.ref('cambiosTurno').push({ solicitanteUid: miUid(), solicitanteOp: mio.id, solicitanteNombre: mio.nombre, companeroUid: opc.dataset.uid, companeroOp: opc.value, companeroNombre: opc.textContent,
+          desde, hasta, motivo: el('ctMotivo').value.trim(), estado: 'pendiente_companero', creado: now });
+        el('ctDesde').value = ''; el('ctHasta').value = ''; el('ctMotivo').value = '';
+        msg('Petición enviada. Cuando tu compañero la acepte, pasará a administración.', true);
+      } else if (act === 'aceptar') { await ref.update({ estado: 'pendiente_admin', aceptadoEn: now }); msg('Has aceptado el cambio. Ahora lo revisa administración.', true); }
+      else if (act === 'rechazar-comp') { if (confirm('¿Rechazar este cambio de turno?')) { await ref.update({ estado: 'rechazado_companero', resueltoEn: now }); msg('Has rechazado el cambio.', true); } }
+      else if (act === 'cancelar') { if (confirm('¿Cancelar tu petición?')) { await ref.update({ estado: 'cancelado', resueltoEn: now }); msg('Petición cancelada.', true); } }
+      else if (act === 'aprobar') {
+        if (!admin() || !r) return;
+        const p = await vistaPrevia(r.solicitanteOp, r.companeroOp, r.desde, r.hasta);
+        if (!confirm(`¿Aprobar y aplicar el cambio de turno?\n\n${r.solicitanteNombre} ⇄ ${r.companeroNombre} (${rango(r)})\n${resumen(p)}`)) return;
+        const ap = await aplicar(r.solicitanteOp, r.companeroOp, r.desde, r.hasta, r.motivo || 'Cambio de turno entre compañeros');
+        await ref.update({ estado: 'aprobado', resueltoPor: miNombre(), resueltoEn: now, diasAplicados: ap.cambios.length });
+        avisar([r.solicitanteUid, r.companeroUid], `🔄 Cambio de turno aprobado: ${r.solicitanteNombre} ⇄ ${r.companeroNombre} (${rango(r)}). El cuadrante ya está actualizado.`);
+        msg(`Cambio aplicado en ${ap.cambios.length} día(s). Los trabajos de tarde se han reasignado.`, true);
+      } else if (act === 'rechazar') {
+        if (!admin() || !r) return;
+        const motivo = prompt('Motivo (opcional, lo verán los dos):', ''); if (motivo === null) return;
+        await ref.update({ estado: 'rechazado', motivoRechazo: motivo.trim(), resueltoPor: miNombre(), resueltoEn: now });
+        avisar([r.solicitanteUid, r.companeroUid], `🔄 Cambio de turno no aprobado: ${r.solicitanteNombre} ⇄ ${r.companeroNombre} (${rango(r)})${motivo.trim() ? '. Motivo: ' + motivo.trim() : '.'}`);
+        msg('Petición rechazada.', true);
+      } else if (act === 'borrar') { if (admin() && confirm('¿Quitar este movimiento del historial?')) await ref.remove(); }
+      else if (act === 'directo') {
+        if (!admin()) return;
+        const a = el('ctA').value, b = el('ctB').value, desde = el('ctDesde').value, hasta = el('ctHasta').value || desde;
+        if (!desde) return msg('Indica la fecha del cambio.', false);
+        if (a === b) return msg('Elige dos operarios distintos.', false);
+        const ops = (ct.cfg && ct.cfg.operarios) || [], oa = ops.find(o => o.id === a), ob = ops.find(o => o.id === b);
+        const p = await vistaPrevia(a, b, desde, hasta);
+        if (!confirm(`¿Aplicar este cambio ahora?\n\n${oa.nombre} ⇄ ${ob.nombre} (${fmt(desde)}${hasta !== desde ? ' – ' + fmt(hasta) : ''})\n${resumen(p)}`)) return;
+        const ap = await aplicar(a, b, desde, hasta, el('ctMotivo').value.trim() || 'Cambio de turno');
+        await realDb.ref('cambiosTurno').push({ solicitanteUid: oa.uid || '', solicitanteOp: a, solicitanteNombre: oa.nombre, companeroUid: ob.uid || '', companeroOp: b, companeroNombre: ob.nombre,
+          desde, hasta, motivo: el('ctMotivo').value.trim(), estado: 'aprobado', directo: true, creado: now, resueltoPor: miNombre(), resueltoEn: now, diasAplicados: ap.cambios.length });
+        avisar([oa.uid, ob.uid], `🔄 Cambio de turno: ${oa.nombre} ⇄ ${ob.nombre} (${fmt(desde)}${hasta !== desde ? ' – ' + fmt(hasta) : ''}). El cuadrante ya está actualizado.`);
+        msg(`Cambio aplicado en ${ap.cambios.length} día(s).`, true);
+      }
+    } catch (e) { msg('Error: ' + ((e && e.message) || e), false); }
+  }
+
+  function escuchar() {
+    if (ct.ref) return;
+    ct.ref = realDb.ref('cambiosTurno');
+    ct.ref.on('value', s => { ct.items = s.val() || {}; if (el('ctContenido') && el('cambiosTurnoScreen') && el('cambiosTurnoScreen').style.display !== 'none') render(); else actualizarContador(); },
+      e => { console.warn('Cambios de turno:', e.message); });
+  }
+  function actualizarContador() {
+    const b = el('menuCambiosTurnoBtn'); if (!b) return;
+    const yo = miUid(), n = Object.values(ct.items).filter(r => admin() ? r.estado === 'pendiente_admin' : (r.estado === 'pendiente_companero' && r.companeroUid === yo)).length;
+    b.textContent = '🔄 Cambios de turno' + (n ? ` (${n})` : '');
+  }
+  async function abrir() {
+    mount(); showScreen('cambiosTurnoScreen');
+    try { ct.cfg = await cfgFresca(); } catch (e) { ct.cfg = null; msg('No se pudo leer la configuración del cuadrante.', false); }
+    escuchar(); render();
+  }
+
+  function mount() {
+    if (!el('ctStyles')) { const st = document.createElement('style'); st.id = 'ctStyles'; st.textContent = CSS; document.head.appendChild(st); }
+    if (!el('cambiosTurnoScreen')) {
+      const scr = document.createElement('div'); scr.className = 'screen'; scr.id = 'cambiosTurnoScreen';
+      scr.innerHTML = `<h1 class="title">🔄 Cambios de turno</h1><div id="ctMsg" class="ct-msg"></div><div id="ctContenido"></div>
+        <button type="button" class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>`;
+      scr.addEventListener('click', click);
+      const ref = el('menuScreen'); (ref && ref.parentNode ? ref.parentNode : document.body).appendChild(scr);
+    }
+    if (!el('menuCambiosTurnoBtn')) {
+      const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'button back-button'; btn.id = 'menuCambiosTurnoBtn'; btn.textContent = '🔄 Cambios de turno';
+      btn.addEventListener('click', abrir);
+      const ref = el('menuCompraBtn') || el('menuCuadranteBtn') || el('menuCentroOperativoBtn'), menu = el('menuScreen');
+      if (ref) ref.insertAdjacentElement('beforebegin', btn); else if (menu) menu.appendChild(btn);
+    }
+  }
+  const arrancar = () => { try { mount(); if (typeof auth !== 'undefined') auth.onAuthStateChanged(u => { if (u) setTimeout(escuchar, 3000); }); } catch (e) { console.warn('Cambios de turno:', e); } };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
+})();
+
+/* ===== EXPORTACIÓN MENSUAL DEL CUADRANTE (añadir al final de app.js) ===== */
+(function () {
+  const COL = { M: 'DCE8FD', T: 'FCE2B6', FS: 'E5CCFD', FD: 'E5CCFD', FT: 'F9B8B8', FL: 'C8F0D7' };
+  const DS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+  const fmt = iso => iso.split('-').reverse().join('/');
+  const corto = iso => iso.split('-').reverse().slice(0, 2).join('/');
+  const wdDe = iso => (cqDate(iso).getUTCDay() + 6) % 7;
+
+  async function exportarMes() {
+    try {
+      if (!_cqEsAdmin()) return;
+      const doc = await _cqCargarAnio(_cq.anio); if (!doc) return _cqMsg('No hay ningún año seleccionado.', false);
+      const sel = document.getElementById('cqMes'), mes = sel ? parseInt(sel.value, 10) : _cq.mes;
+      await _cqCargarExcelJS();
+      const y = doc.year, nd = new Date(Date.UTC(y, mes + 1, 0)).getUTCDate(), nombreMes = CQ_MESES[mes], p = doc.horas || {};
+      const dias = []; for (let d = 1; d <= nd; d++) dias.push(cqIso(new Date(Date.UTC(y, mes, d))));
+      const ops = doc.operarios || [];
+      const cod = (o, f) => _cqCodigo(doc, o.id, f);
+      const festNombre = {}; (doc.festivos || []).forEach(f => { festNombre[f.fecha] = f.nombre || 'Festivo'; });
+      const wb = new ExcelJS.Workbook();
+      const rgb = h => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + h } });
+      const bd = { style: 'thin', color: { argb: 'FFBFBFBF' } }, bordes = { top: bd, left: bd, bottom: bd, right: bd };
+      const centro = { horizontal: 'center', vertical: 'middle' };
+      const titulo = (hoja, txt, cols) => { const r = hoja.addRow([txt]); hoja.mergeCells(r.number, 1, r.number, cols); r.height = 24; r.getCell(1).font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } }; r.getCell(1).fill = rgb('1F3A5F'); r.getCell(1).alignment = { vertical: 'middle' }; hoja.addRow([]); };
+      const cabecera = (hoja, vals) => { const r = hoja.addRow(vals); r.height = 26; r.eachCell(c => { c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = rgb('1F3A5F'); c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; c.border = bordes; }); return r; };
+
+      /* Hoja 1: quién y cuándo (día a día) */
+      const h1 = wb.addWorksheet('Quién y cuándo', { views: [{ state: 'frozen', ySplit: 3 }], pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
+      h1.columns = [{ width: 13 }, { width: 13 }, { width: 34 }, { width: 28 }, { width: 38 }, { width: 28 }];
+      titulo(h1, `Cuadrante de ${nombreMes} ${y} — quién ha estado de mañana y de tarde`, 6);
+      cabecera(h1, ['Fecha', 'Día', 'Mañana', 'Tarde', 'Fin de semana / festivos', 'Festivo']);
+      dias.forEach(f => {
+        const wd = wdDe(f), man = ops.filter(o => cod(o, f) === 'M').map(o => o.nombre), tar = ops.filter(o => cod(o, f) === 'T').map(o => o.nombre);
+        const otros = ops.map(o => [o, cod(o, f)]).filter(([, c]) => c && !['M', 'T', 'L'].includes(c)).map(([o, c]) => `${o.nombre} (${CQ_CODIGOS[c] || c})`);
+        const r = h1.addRow([fmt(f), DS[wd], man.join(', ') || '–', tar.join(', ') || '–', otros.join(', '), festNombre[f] || '']);
+        r.eachCell(c => { c.border = bordes; c.alignment = { vertical: 'middle', wrapText: true }; if (wd >= 5) c.fill = rgb('EFEFF2'); });
+        if (festNombre[f]) r.eachCell(c => { c.fill = rgb('FDE2E2'); });
+        if (tar.length) r.getCell(4).fill = rgb(COL.T); if (man.length && wd < 5) r.getCell(3).fill = rgb(COL.M);
+      });
+
+      /* Hoja 2: tardes por semana (se ven los cambios de turno) */
+      const h2 = wb.addWorksheet('Tardes por semana');
+      h2.columns = [{ width: 26 }, { width: 70 }];
+      titulo(h2, `Quién ha estado de tarde en ${nombreMes} ${y}`, 2);
+      cabecera(h2, ['Semana', 'De tarde (lunes a viernes)']);
+      const semanas = new Map();
+      dias.filter(f => wdDe(f) < 5).forEach(f => {
+        const lunes = cqIso(new Date(cqDate(f).getTime() - wdDe(f) * CQ_MS)), t = ops.find(o => cod(o, f) === 'T');
+        if (!semanas.has(lunes)) semanas.set(lunes, []);
+        const seg = semanas.get(lunes), nom = t ? t.nombre : 'sin turno de tarde', ult = seg[seg.length - 1];
+        if (ult && ult.nom === nom) ult.hasta = f; else seg.push({ nom, desde: f, hasta: f });
+      });
+      semanas.forEach((seg, lunes) => {
+        const ini = seg[0].desde, fin = seg[seg.length - 1].hasta;
+        const r = h2.addRow([`${corto(ini)} – ${corto(fin)}`, seg.map(s => `${s.nom}${seg.length > 1 ? ` (${corto(s.desde)}${s.hasta !== s.desde ? ' – ' + corto(s.hasta) : ''})` : ''}`).join('   ·   ')]);
+        r.eachCell(c => { c.border = bordes; c.alignment = { vertical: 'middle', wrapText: true }; });
+        r.getCell(1).font = { bold: true }; if (seg.length > 1) r.getCell(2).fill = rgb('FFF4D6');
+      });
+      h2.addRow([]); h2.addRow(['Las semanas en amarillo tienen cambio de turno a mitad de semana.']).getCell(1).font = { italic: true, size: 9 };
+
+      /* Hoja 3: resumen por operario */
+      const h3 = wb.addWorksheet('Resumen del mes');
+      h3.columns = [{ width: 26 }, ...Array(8).fill({ width: 13 })];
+      titulo(h3, `Resumen de ${nombreMes} ${y} por operario`, 9);
+      cabecera(h3, ['Operario', 'Mañanas', 'Tardes', 'Sábados', 'Domingos', 'Fest. trabajados', 'Fest. locales', 'Libres', 'Horas estimadas']);
+      ops.forEach((o, i) => {
+        const cnt = {}; dias.forEach(f => { const c = cod(o, f); cnt[c] = (cnt[c] || 0) + 1; });
+        const horas = (cnt.M || 0) * (p.horasDia || 0) + (cnt.T || 0) * (p.horasDia || 0) + (cnt.FS || 0) * (p.horasSabado || 0) + (cnt.FD || 0) * (p.horasDomingo || 0) + (cnt.FT || 0) * (p.horasFT || 0) + (cnt.FL || 0) * (p.horasFL || 0);
+        const r = h3.addRow([o.nombre, cnt.M || 0, cnt.T || 0, cnt.FS || 0, cnt.FD || 0, cnt.FT || 0, cnt.FL || 0, cnt.L || 0, Math.round(horas * 100) / 100]);
+        r.eachCell((c, n) => { c.border = bordes; c.alignment = n === 1 ? { vertical: 'middle' } : centro; if (i % 2) c.fill = rgb('F6F7FA'); });
+        r.getCell(1).font = { bold: true }; r.getCell(9).numFmt = '0.00';
+      });
+      h3.addRow([]); h3.addRow(['Las horas son una estimación del mes (días × horas de cada tipo); no descuentan vacaciones.']).getCell(1).font = { italic: true, size: 9 };
+
+      /* Hoja 4: cuadrícula del mes con colores */
+      const h4 = wb.addWorksheet('Cuadrante', { views: [{ state: 'frozen', xSplit: 1 }], pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
+      h4.getColumn(1).width = 26; for (let c = 2; c <= nd + 1; c++) h4.getColumn(c).width = 4.3;
+      const t4 = h4.addRow([`${nombreMes.toUpperCase()} ${y}`]); h4.mergeCells(t4.number, 1, t4.number, nd + 1); t4.height = 22;
+      t4.getCell(1).font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } }; t4.getCell(1).fill = rgb('1F3A5F'); t4.getCell(1).alignment = { vertical: 'middle' };
+      const hN = h4.addRow(['Empleado']), hL = h4.addRow(['']);
+      [hN.getCell(1), hL.getCell(1)].forEach(c => { c.fill = rgb('F2F4F8'); c.border = bordes; c.font = { bold: true }; });
+      dias.forEach((f, k) => {
+        const wd = wdDe(f), fest = !!festNombre[f], a = hN.getCell(k + 2), b = hL.getCell(k + 2); a.value = k + 1; b.value = CQ_DIASEM[wd];
+        [a, b].forEach(c => { c.alignment = centro; c.border = bordes; c.fill = rgb(fest ? 'FDE2E2' : wd >= 5 ? 'E7E7EA' : 'F2F4F8'); c.font = { bold: c === a, size: c === a ? 10 : 8, color: { argb: fest ? 'FFC62828' : 'FF333333' } }; });
+      });
+      ops.forEach(o => {
+        const row = h4.addRow([o.nombre]), n = row.getCell(1); n.font = { bold: true }; n.border = bordes; n.alignment = { vertical: 'middle', wrapText: true };
+        dias.forEach((f, k) => {
+          const c = cod(o, f), cell = row.getCell(k + 2), wd = wdDe(f); cell.value = c; cell.alignment = centro; cell.border = bordes;
+          cell.font = { size: 9, bold: c === 'FT', color: { argb: c === 'L' ? 'FF8A8A8A' : 'FF222222' } };
+          if (COL[c]) cell.fill = rgb(COL[c]); else if (wd >= 5) cell.fill = rgb('F3F3F5');
+        });
+      });
+      h4.addRow([]); h4.addRow(['Leyenda']).getCell(1).font = { bold: true };
+      Object.keys(CQ_CODIGOS).forEach(k => { const r = h4.addRow([CQ_CODIGOS[k], k]), c = r.getCell(2); c.alignment = centro; c.border = bordes; c.font = { bold: k === 'FT', size: 9 }; if (COL[k]) c.fill = rgb(COL[k]); });
+
+      const buf = await wb.xlsx.writeBuffer();
+      _descargarLocal(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `Cuadrante_${nombreMes}_${y}.xlsx`);
+      _cqMsg(`Cuadrante de ${nombreMes} ${y} exportado.`, true);
+    } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
+  }
+  window.cuadranteExportarMes = exportarMes;
+  document.addEventListener('click', ev => { const b = ev.target.closest && ev.target.closest('[data-act="exportar-mes"]'); if (b) exportarMes(); });
 })();
