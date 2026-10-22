@@ -4190,14 +4190,39 @@ function cerrarSesion() {
   window.location.reload();
 }
 
+// Índice ligero de instalaciones: instalacionesMeta/{id} = {nombre, creadaEn}.
+// Evita descargar las instalaciones enteras solo para listar nombres. Si el índice no
+// existe todavía (o las reglas aún no están publicadas) lee instalaciones una vez y, si
+// el usuario es admin, crea el índice. Para reconstruirlo: borrar el nodo instalacionesMeta.
+async function _instalacionesMeta() {
+  try {
+    const s = await realDb.ref('instalacionesMeta').once('value');
+    const v = s.val();
+    if (v && Object.keys(v).length) return v;
+  } catch (e) { console.warn('instalacionesMeta:', e.message); }
+  const snap = await realDb.ref('instalaciones').once('value');
+  const data = snap.val() || {};
+  const out = {};
+  Object.keys(data).forEach(k => {
+    if (data[k] && data[k].meta) out[k] = { nombre: data[k].meta.nombre || k, creadaEn: data[k].meta.creadaEn || '' };
+  });
+  if (localStorage.getItem('usuarioRol') === 'admin' && Object.keys(out).length) {
+    Object.keys(out).forEach(k => {
+      realDb.ref('instalacionesMeta/' + k).set(out[k]).catch(e => console.warn('Índice instalaciones:', e.message));
+    });
+  }
+  return out;
+}
+
 async function cargarInstalaciones() {
   const contenedor = document.getElementById('listaInstalaciones');
   const enterBtn   = document.getElementById('enterBtn');
   if (!contenedor) return;
 
   try {
-    const snap = await realDb.ref('instalaciones').once('value');
-    const data  = snap.val() || {};
+    const _idx = await _instalacionesMeta();
+    const data = {};
+    Object.keys(_idx).forEach(k => { data[k] = { meta: _idx[k] }; });
     let ids   = Object.keys(data).filter(k => data[k] && data[k].meta);
 
     if (!ids.length) {
@@ -4224,6 +4249,18 @@ async function cargarInstalaciones() {
         }
       }
     }
+
+    // Solo las 3 listas necesarias para el aviso de «trabajo pendiente» (sin stock, equipos, historial...)
+    const _lista = v => !v ? [] : (Array.isArray(v) ? v : Object.values(v));
+    await Promise.all(ids.map(async id => {
+      try {
+        const [m, a, t] = await Promise.all(['mantenimientosPeriodicos', 'workOrdersAverias', 'workOrdersTareas']
+          .map(n => realDb.ref(`instalaciones/${id}/${n}`).once('value')));
+        data[id].mantenimientosPeriodicos = _lista(m.val());
+        data[id].workOrdersAverias = _lista(a.val());
+        data[id].workOrdersTareas  = _lista(t.val());
+      } catch (e) { console.warn('Pendientes de', id, e.message); }
+    }));
 
     contenedor.innerHTML = '';
     const activa = localStorage.getItem('instalacionActiva') || '';
@@ -4332,10 +4369,13 @@ async function crearInstalacion() {
     const snap = await realDb.ref(`instalaciones/${id}/meta`).once('value');
     if (snap.val()) { alert('Ya existe una instalación con ese nombre'); return; }
 
+    const _creadaEn = new Date().toISOString();
     await realDb.ref(`instalaciones/${id}/meta`).set({
       nombre,
-      creadaEn: new Date().toISOString()
+      creadaEn: _creadaEn
     });
+    try { await realDb.ref(`instalacionesMeta/${id}`).set({ nombre, creadaEn: _creadaEn }); }
+    catch (e) { console.warn('No se pudo actualizar el índice de instalaciones:', e.message); }
 
     if (input) input.value = '';
     alert(`Instalación "${nombre}" creada correctamente`);
@@ -4352,8 +4392,9 @@ async function cargarInstalacionesAdmin() {
   const contenedor = document.getElementById('listaInstalacionesAdmin');
   if (!contenedor) return;
   try {
-    const snap = await realDb.ref('instalaciones').once('value');
-    const data  = snap.val() || {};
+    const _idx = await _instalacionesMeta();
+    const data = {};
+    Object.keys(_idx).forEach(k => { data[k] = { meta: _idx[k] }; });
     let ids   = Object.keys(data).filter(k => data[k] && data[k].meta);
     if (!ids.length) { contenedor.innerHTML = '<p style="color:var(--text-muted)">Sin instalaciones</p>'; return; }
     ids.sort((a,b) => (data[a].meta.creadaEn||'').localeCompare(data[b].meta.creadaEn||''));
@@ -4387,12 +4428,13 @@ async function cargarUsuariosAdmin() {
   if (!contenedor) return;
   contenedor.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem">Cargando...</p>';
   try {
-    const [snapUsuarios, snapInst] = await Promise.all([
+    const [snapUsuarios, _idx] = await Promise.all([
       realDb.ref('usuarios').once('value'),
-      realDb.ref('instalaciones').once('value')
+      _instalacionesMeta()
     ]);
     const usuarios     = snapUsuarios.val() || {};
-    const instalaciones = snapInst.val() || {};
+    const instalaciones = {};
+    Object.keys(_idx).forEach(k => { instalaciones[k] = { meta: _idx[k] }; });
     const instIds      = Object.keys(instalaciones).filter(k => instalaciones[k] && instalaciones[k].meta);
 
     if (!Object.keys(usuarios).length) {
@@ -4987,30 +5029,9 @@ function _registrarListenersFirebase() {
     updateNotificationIcons();
   }, (e) => console.warn('Firebase workOrdersTareas sync error:', e));
 
-  // Listener global de instalaciones/${INST()} (detecta cambios en mantenimientos)
+  // (Eliminado: listener sobre instalaciones/${INST()} entero. Los mantenimientos ya los
+  //  escucha escucharMantenimientos() y escuchar el nodo completo descargaba todo en cada cambio.)
   if (INST() === 'default') return; // no listener sin instalación
-  realDb.ref(`instalaciones/${INST()}`).on('value', (snapshot) => {
-    const val = snapshot.val();
-    if (!val) return;
-    let needsUpdate = false;
-    if (val.mantenimientosPeriodicos) {
-      const newMaint = Array.isArray(val.mantenimientosPeriodicos)
-        ? val.mantenimientosPeriodicos.filter(m => m && m.accion)
-        : [];
-      if (JSON.stringify(db.mantenimientosPeriodicos) !== JSON.stringify(newMaint)) {
-        db.mantenimientosPeriodicos = [...newMaint];
-        reconstruirMantenimientos();
-        needsUpdate = true;
-      }
-    }
-    if (needsUpdate) {
-      localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
-      console.log('Data synchronized from Firebase');
-      checkPendingWorkOrders();
-      updateNotificationIcons();
-      actualizarListaMantenimientos();
-    }
-  }, (e) => console.warn('Firebase sync error:', e));
 
   // stock
   realDb.ref(`instalaciones/${INST()}/stock`).on('value', (snapshot) => {
@@ -5529,8 +5550,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     checkPendingWorkOrders();
     updateAdminLists();
 
-    const listaMantenimientos = document.getElementById('listaMantenimientosPeriodicos');
-    if (listaMantenimientos) listaMantenimientos.style.display = 'none';
+    // La lista de mantenimientos de Periodicidad se muestra siempre
 
     updateSelectors();
 
@@ -7801,4 +7821,376 @@ function _cqMontar() {
   }
   window.cuadranteExportarMes = exportarMes;
   document.addEventListener('click', ev => { const b = ev.target.closest && ev.target.closest('[data-act="exportar-mes"]'); if (b) exportarMes(); });
+})();
+
+/* ===== RECAMBIOS: arreglo de la edición, recambios compartidos entre equipos idénticos y aviso por mínimo (añadir al final de app.js) ===== */
+(function () {
+  const eqs = () => (window.equiposDb && window.equiposDb.equiposGuardados) || [];
+  const esc = s => _h(s);
+  const maestroDe = (eq, lista) => (eq && eq.recambiosDe) ? (lista || eqs()).find(e => e && e !== eq && e.equipo === eq.recambiosDe && !e.recambiosDe) || null : null;
+  const dependientes = (eq, lista) => (lista || eqs()).filter(e => e && e !== eq && e.recambiosDe === eq.equipo);
+  const num = v => (v === '' || v === null || v === undefined) ? NaN : Number(v);
+  const bajo = r => { const c = num(r.cantidad); return !isNaN(c) && c <= (Number(r.minimo) || 0); };
+
+  /* Los equipos que comparten recambios apuntan a la MISMA lista en memoria: al gastar o reponer en uno, cambia para todos */
+  function enlazar(lista) {
+    const l = lista || eqs();
+    l.forEach(eq => {
+      if (!eq || !eq.recambiosDe) return;
+      const m = maestroDe(eq, l);
+      if (m) { if (!Array.isArray(m.recambios)) m.recambios = []; eq.recambios = m.recambios; }
+    });
+  }
+  window._enlazarRecambios = enlazar;
+  if (typeof window._aplicarStockFirebase === 'function') {
+    const orig = window._aplicarStockFirebase;
+    window._aplicarStockFirebase = function () { const r = orig.apply(this, arguments); try { enlazar(); } catch (e) { console.warn('Recambios compartidos:', e); } return r; };
+  }
+
+  /* Aviso de stock: solo el equipo principal, y cuando quedan «mínimo» unidades o menos */
+  window.equipoTieneStockAgotado = function (equipo) {
+    if (!equipo) return false;
+    if (maestroDe(equipo)) return false;
+    const c0 = num(equipo.cantidad); if (!isNaN(c0) && c0 === 0) return true;
+    return Array.isArray(equipo.recambios) && equipo.recambios.some(r => r && bajo(r));
+  };
+
+  /* Listas de recambios (lectura y edición) */
+  window.generarListaRecambios = function (recambios) {
+    return (recambios || []).map(r => `<div class="spare-part-item"><span>${esc(r.nombre)}: ${esc(r.cantidad)} unidades${Number(r.minimo) > 0 ? ` · aviso al llegar a ${esc(r.minimo)}` : ''}${bajo(r) ? ' ⚠' : ''}</span></div>`).join('');
+  };
+  window.generarFormularioRecambios = function (recambios, idx) {
+    const eq = eqs()[idx], m = maestroDe(eq);
+    if (m) return `<p class="cmp-nota">Estos recambios se comparten con <b>${esc(m.equipo)}</b>. Se editan desde ese equipo.</p>${window.generarListaRecambios(recambios)}`;
+    return (recambios || []).map((r, i) => `
+    <div class="spare-part-item" style="display:flex;gap:6px;flex-wrap:wrap">
+      <input type="text"   id="recambio-nombre-${idx}-${i}"   value="${esc(r.nombre)}" style="flex:2 1 140px">
+      <input type="number" id="recambio-cantidad-${idx}-${i}" value="${esc(r.cantidad)}" min="0" title="Cantidad en stock" style="flex:1 1 70px">
+      <input type="number" id="recambio-minimo-${idx}-${i}"   value="${Number(r.minimo) > 0 ? esc(r.minimo) : ''}" min="0" placeholder="Avisar ≤" title="Avisar cuando queden estas unidades o menos (vacío = solo al llegar a 0)" style="flex:1 1 80px">
+    </div>`).join('');
+  };
+
+  /* Lee las filas del formulario (lo que se ve en pantalla manda) */
+  function leerFilas(index) {
+    const filas = [];
+    for (let k = 0; document.getElementById(`recambio-nombre-${index}-${k}`); k++) {
+      const nombre = document.getElementById(`recambio-nombre-${index}-${k}`).value.trim();
+      const cEl = document.getElementById(`recambio-cantidad-${index}-${k}`), mEl = document.getElementById(`recambio-minimo-${index}-${k}`);
+      const cantidad = parseInt(cEl ? cEl.value : '', 10), minimo = parseInt(mEl ? mEl.value : '', 10);
+      if (!nombre || isNaN(cantidad) || cantidad < 0) return null;
+      const r = { nombre, cantidad }; if (!isNaN(minimo) && minimo > 0) r.minimo = minimo; filas.push(r);
+    }
+    return filas;
+  }
+
+  /* ARREGLO: al añadir un recambio ya no se pierden las cantidades editadas y aún sin guardar */
+  window.agregarNuevoRecambio = async function (idx) {
+    const nombre = document.getElementById(`nuevo-recambio-nombre-${idx}`).value.trim();
+    const cantidad = parseInt(document.getElementById(`nuevo-recambio-cantidad-${idx}`).value, 10);
+    if (!nombre || isNaN(cantidad) || cantidad < 0) { alert('Por favor ingrese un nombre y una cantidad válida para el recambio'); return; }
+    const equipo = eqs()[idx]; if (!equipo) return;
+    if (maestroDe(equipo)) { alert('Este equipo comparte los recambios con otro. Añade el recambio desde el equipo principal.'); return; }
+    if (!equipo.recambios) equipo.recambios = [{ nombre: equipo.recambio, cantidad: equipo.cantidad }];
+    equipo.recambios.forEach((r, k) => {                                   // conservar lo que ya se ha tecleado
+      const n = document.getElementById(`recambio-nombre-${idx}-${k}`), c = document.getElementById(`recambio-cantidad-${idx}-${k}`), m = document.getElementById(`recambio-minimo-${idx}-${k}`);
+      if (n && n.value.trim()) r.nombre = n.value.trim();
+      if (c && !isNaN(parseInt(c.value, 10)) && parseInt(c.value, 10) >= 0) r.cantidad = parseInt(c.value, 10);
+      if (m) { const v = parseInt(m.value, 10); if (!isNaN(v) && v > 0) r.minimo = v; else delete r.minimo; }
+    });
+    equipo.recambios.push({ nombre, cantidad });
+    document.getElementById(`recambios-list-${idx}`).innerHTML = window.generarFormularioRecambios(equipo.recambios, idx);
+    document.getElementById(`nuevo-recambio-nombre-${idx}`).value = '';
+    document.getElementById(`nuevo-recambio-cantidad-${idx}`).value = '';
+  };
+
+  /* ARREGLO + COMPARTIR: guarda lo que hay en pantalla y gestiona el enlace con otro equipo */
+  window.guardarEdicionEquipo = async function (index) {
+    const val = id => { const e = document.getElementById(id); return e ? e.value : ''; };
+    const familia = val(`familia-${index}`), zona = val(`zona-${index}`), equipo = val(`equipo-${index}`), modelo = val(`modelo-${index}`);
+    if (!familia || !zona || !equipo || !modelo) { alert('Por favor complete todos los campos correctamente'); return; }
+    const lista = [...eqs()], actual = lista[index]; if (!actual) { alert('No se encontró el equipo.'); return; }
+    const sel = document.getElementById(`comparte-${index}`), destino = sel ? sel.value : (actual.recambiosDe && maestroDe(actual, lista) ? actual.recambiosDe : '');
+    if (destino) {
+      const m = lista.find(e => e && e !== actual && e.equipo === destino);
+      if (!m) { alert('El equipo elegido ya no existe.'); return; }
+      if (m.recambiosDe) { alert('Ese equipo comparte a su vez con otro. Elige el equipo principal.'); return; }
+      if (dependientes(actual, lista).length) { alert('Otros equipos comparten los recambios de este. Cámbialos primero.'); return; }
+      if ((actual.recambios || []).length && !maestroDe(actual, lista) && !confirm(`«${equipo}» dejará de tener recambios propios y usará los de «${destino}». ¿Continuar?`)) return;
+    }
+    let recambios;
+    if (destino) recambios = [];                                                                          // usará los del otro equipo
+    else if (maestroDe(actual, lista)) recambios = JSON.parse(JSON.stringify(maestroDe(actual, lista).recambios || []));  // deja de compartir: copia propia
+    else if (document.getElementById(`recambio-nombre-${index}-0`)) {
+      recambios = leerFilas(index);
+      if (!recambios) { alert('Por favor complete todos los campos de recambios correctamente'); return; }
+    } else recambios = JSON.parse(JSON.stringify(actual.recambios || []));
+    try {
+      if (equipo !== actual.equipo) dependientes(actual, lista).forEach(e => { e.recambiosDe = equipo; });  // si se renombra el principal, los demás lo siguen
+      const nuevo = { familia, zona, equipo, modelo, recambios }; if (destino) nuevo.recambiosDe = destino;
+      lista[index] = nuevo;
+      window.equiposDb.equiposGuardados = lista; enlazar(lista);
+      _equiposNav = { paso: 'equipo', familia, zona };
+      await realDb.ref(`instalaciones/${INST()}/stock`).set(lista);
+      guardarEquiposDb(); actualizarListaEquipos(); updateStockIcon();
+      alert('Cambios guardados con éxito');
+    } catch (error) { console.error('Error al guardar cambios:', error); alert('Error al guardar los cambios: ' + error.message); }
+  };
+
+  /* Selector «comparte recambios con…» dentro del formulario de edición de cada equipo */
+  function inyectar() {
+    try {
+      if (!document.getElementById('cmpCss')) { const st = document.createElement('style'); st.id = 'cmpCss'; st.textContent = '.cmp-nota{font-size:.88rem;color:var(--text-secondary);margin:6px 0}.cmp-enlace{font-size:.9rem;margin:6px 0;color:var(--text-secondary)}'; document.head.appendChild(st); }
+      const lista = eqs();
+      document.querySelectorAll('.equipo-record').forEach(rec => {
+        const idx = parseInt(rec.dataset.equipoIndex, 10), eq = lista[idx], form = rec.querySelector(`#edit-equipo-${idx}`);
+        if (!eq || !form || rec.querySelector('.cmp-bloque')) return;
+        const dep = dependientes(eq, lista), m = maestroDe(eq, lista);
+        const cand = lista.map((e, i) => ({ e, i })).filter(({ e, i }) => e && i !== idx && !e.recambiosDe && e.equipo && e.equipo !== eq.equipo)
+          .sort((a, b) => ((b.e.modelo === eq.modelo) - (a.e.modelo === eq.modelo)) || String(a.e.equipo).localeCompare(String(b.e.equipo)));
+        const bloque = document.createElement('div'); bloque.className = 'form-group cmp-bloque';
+        bloque.innerHTML = dep.length
+          ? `<label>Recambios compartidos</label><p class="cmp-nota">Estos recambios también los usan: <b>${dep.map(d => esc(d.equipo)).join(', ')}</b>. El stock se controla aquí, una sola vez.</p>`
+          : `<label>¿Comparte los recambios con otro equipo idéntico?</label><select id="comparte-${idx}"><option value="">No, tiene recambios propios</option>${cand.map(({ e }) => `<option value="${esc(e.equipo)}"${m && m.equipo === e.equipo ? ' selected' : ''}>${esc(e.equipo)}${e.modelo === eq.modelo ? ' · mismo modelo' : ''}</option>`).join('')}</select><p class="cmp-nota">Si comparte, no hay que repetir los recambios: se usa el stock del otro equipo y el aviso sale una sola vez.</p>`;
+        const grp = form.querySelector(`#recambios-list-${idx}`); const ancla = grp && grp.closest('.form-group');
+        (ancla || form).insertAdjacentElement('beforebegin', bloque);
+        if (m) { const af = form.querySelector('.add-spare-part-form'); if (af) af.style.display = 'none'; }
+        const info = dep.length ? `🔗 Recambios compartidos con: ${dep.map(d => esc(d.equipo)).join(', ')}` : (m ? `🔗 Recambios compartidos con <b>${esc(m.equipo)}</b>` : '');
+        const lst = rec.querySelector('.spare-parts-list');
+        if (info && lst && !rec.querySelector('.cmp-enlace')) lst.insertAdjacentHTML('beforebegin', `<p class="cmp-enlace">${info}</p>`);
+      });
+    } catch (e) { console.warn('Recambios compartidos (pantalla):', e); }
+  }
+  if (typeof window.actualizarListaEquipos === 'function') {
+    const origLista = window.actualizarListaEquipos;
+    window.actualizarListaEquipos = function () { const r = origLista.apply(this, arguments); if (r && typeof r.then === 'function') return r.then(v => { inyectar(); return v; }); inyectar(); return r; };
+  }
+
+  /* Alertas de stock: una vez por recambio compartido, con botón para pedirlo */
+  async function pedir(item) {
+    try {
+      const adm = localStorage.getItem('usuarioRol') === 'admin', ref = realDb.ref(`compra/${INST()}/compra`), uid = (auth.currentUser && auth.currentUser.uid) || localStorage.getItem('usuarioUid') || '';
+      const nombre = `${item.recambio} (${item.corto})`.slice(0, 80);
+      const s = await ref.once('value'), ya = Object.values(s.val() || {}).some(x => x && ['solicitada', 'aceptada'].includes(x.estado || (x.comprado ? 'comprada' : 'aceptada')) && String(x.nombre).toLowerCase() === nombre.toLowerCase());
+      if (ya) { alert('Ya está en la lista de la compra o pendiente de revisión.'); return; }
+      const now = new Date().toISOString(), dato = { nombre, cantidad: '', urgente: Number(item.cantidad) === 0, autor: localStorage.getItem('usuarioNombre') || 'Usuario', uid, fecha: now, estado: adm ? 'aceptada' : 'solicitada' };
+      if (adm) { dato.resueltoPor = dato.autor; dato.resueltoEn = now; }
+      await ref.push(dato);
+      alert(adm ? 'Añadido a la lista de la compra.' : 'Petición enviada. Administración la revisará.');
+    } catch (e) { alert('No se pudo añadir a la compra: ' + e.message); }
+  }
+  window.showStockAlerts = function () {
+    const content = _crearPopup('Alertas de Stock'), lista = eqs();
+    if (!lista.length) { content.innerHTML = '<p>No hay datos de inventario disponibles</p>'; return; }
+    const items = [];
+    lista.forEach(eq => {
+      if (!eq || maestroDe(eq, lista)) return;
+      const dep = dependientes(eq, lista).map(d => d.equipo), titulo = dep.length ? `${eq.equipo} (compartido con ${dep.join(', ')})` : eq.equipo, corto = [eq.equipo, ...dep].join(', ');
+      if (num(eq.cantidad) === 0) items.push({ titulo, corto, recambio: eq.recambio, cantidad: 0, minimo: 0 });
+      (eq.recambios || []).forEach(r => { if (r && bajo(r)) items.push({ titulo, corto, recambio: r.nombre, cantidad: r.cantidad, minimo: Number(r.minimo) || 0 }); });
+    });
+    if (!items.length) { content.innerHTML = '<p>No hay items sin stock</p>'; return; }
+    [...items].sort((a, b) => String(a.titulo).localeCompare(String(b.titulo))).forEach(item => {
+      const div = document.createElement('div'); div.className = 'stock-info';
+      div.innerHTML = `<h4>${esc(item.titulo)}</h4><p>Recambio: ${esc(item.recambio)}</p><p>Stock: ${esc(item.cantidad)}${item.minimo ? ` (aviso al llegar a ${esc(item.minimo)})` : ''}</p><button type="button" class="button">🛒 Añadir a la compra</button>`;
+      div.querySelector('button').addEventListener('click', ev => { ev.target.disabled = true; pedir(item).finally(() => { ev.target.disabled = false; }); });
+      content.appendChild(div);
+    });
+  };
+  try { enlazar(); } catch (e) { /* aún sin datos */ }
+})();
+
+/* ===== COMPRA UNIFICADA DE TODAS LAS INSTALACIONES (añadir al final de app.js) ===== */
+(function () {
+  const CSS = `
+#compraUnificadaScreen .cu-tabs{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap}
+#compraUnificadaScreen .cu-tab{padding:10px 16px;min-height:44px;background:var(--bg-card);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-md);cursor:pointer}
+#compraUnificadaScreen .cu-tab.activo{background:var(--blue-glow);border-color:var(--blue-dim);color:var(--text-primary);font-weight:700}
+#compraUnificadaScreen .cu-nota{font-size:.92rem;color:var(--text-secondary);margin:8px 0;background:var(--bg-card);border-left:4px solid var(--blue-dim);padding:10px 12px;border-radius:var(--radius-md)}
+#compraUnificadaScreen .cu-item{display:flex;align-items:center;gap:10px;padding:10px;margin:0 0 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md)}
+#compraUnificadaScreen .cu-item.cu-urg{border-left:4px solid var(--red)}
+#compraUnificadaScreen .cu-txt{flex:1;min-width:0;line-height:1.4}
+#compraUnificadaScreen .cu-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+#compraUnificadaScreen .cu-chip{font-size:.82rem;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:2px 10px;color:var(--text-secondary)}
+#compraUnificadaScreen .cu-tag{background:var(--red);color:#fff;font-size:.68rem;padding:2px 7px;border-radius:8px;margin-left:6px;font-weight:700}
+#compraUnificadaScreen .cu-btn{min-width:44px;min-height:44px;background:transparent;border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text-primary);cursor:pointer;font-size:1.1rem}
+#compraUnificadaScreen .cu-cab{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:14px 0 8px;font-size:.95rem}
+#compraUnificadaScreen .cu-vacio{font-size:.9rem;color:var(--text-muted);margin:8px 0}
+#compraUnificadaScreen .cu-msg{min-height:20px;font-size:.88rem;margin:0 0 8px}`;
+  const st = { all: {}, nombres: {}, modo: 'producto', ref: null };
+  const admin = () => localStorage.getItem('usuarioRol') === 'admin';
+  const miNombre = () => localStorage.getItem('usuarioNombre') || 'Usuario';
+  const el = id => document.getElementById(id);
+  const esc = s => _h(s);
+  const est = i => i.estado || (i.comprado ? 'comprada' : 'aceptada');
+  const norm = s => String(s || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
+  function guardados() { try { return JSON.parse(localStorage.getItem('instalacionesNombres')) || {}; } catch (e) { return {}; } }
+  const nombreInst = id => st.nombres[id] || guardados()[id] || id;
+  function msg(t, ok) { const m = el('cuMsg'); if (!m) return; m.textContent = t; m.style.color = ok ? 'var(--green)' : 'var(--red)'; clearTimeout(msg._t); msg._t = setTimeout(() => { m.textContent = ''; }, 5000); }
+
+  function elementos() {                       // todo lo aceptado y pendiente de comprar, de todas las instalaciones
+    const out = [];
+    Object.entries(st.all).forEach(([inst, nodo]) => Object.entries((nodo && nodo.compra) || {}).forEach(([id, it]) => {
+      if (it && est(it) === 'aceptada' && norm(it.nombre)) out.push({ inst, id, nombre: it.nombre, cantidad: String(it.cantidad || '').trim(), urgente: !!it.urgente, autor: it.autor || '' });
+    }));
+    return out;
+  }
+  function grupos(items) {
+    const mapa = new Map();
+    items.forEach(x => { const k = norm(x.nombre); if (!mapa.has(k)) mapa.set(k, { nombre: x.nombre, urgente: false, partes: [] }); const g = mapa.get(k); g.urgente = g.urgente || x.urgente; g.partes.push(x); });
+    return [...mapa.values()].sort((a, b) => (b.urgente - a.urgente) || a.nombre.localeCompare(b.nombre));
+  }
+  function total(g) { return g.partes.length > 1 && g.partes.every(p => /^\d+$/.test(p.cantidad)) ? g.partes.reduce((n, p) => n + parseInt(p.cantidad, 10), 0) : null; }
+
+  function render() {
+    const host = el('cuLista'); if (!host) return;
+    const items = elementos(), adm = admin();
+    const btn = (act, ic, t, data) => `<button type="button" class="cu-btn" data-act="${act}" ${data} title="${t}">${ic}</button>`;
+    let h = `<div class="cu-cab"><b>${items.length} artículo${items.length === 1 ? '' : 's'} por comprar en ${new Set(items.map(i => i.inst)).size} instalación(es)</b><button type="button" class="button" data-act="compartir">📤 Compartir</button></div>`;
+    if (!items.length) h += '<p class="cu-vacio">No hay nada aceptado pendiente de comprar ✅</p>';
+    else if (st.modo === 'producto') {
+      h += grupos(items).map(g => { const t = total(g), k = esc(norm(g.nombre));
+        return `<div class="cu-item${g.urgente ? ' cu-urg' : ''}"><div class="cu-txt"><b>${esc(g.nombre)}</b>${g.urgente ? '<span class="cu-tag">URGENTE</span>' : ''}${t !== null ? ` · <b>total ${t}</b>` : ''}
+          <div class="cu-chips">${g.partes.map(p => `<span class="cu-chip">${esc(nombreInst(p.inst))}${p.cantidad ? ': ' + esc(p.cantidad) : ''}</span>`).join('')}</div></div>${adm ? btn('comprado-grupo', '☐', 'Marcar como comprado en todas las instalaciones', `data-k="${k}"`) : ''}</div>`; }).join('');
+    } else {
+      const porInst = new Map(); items.forEach(i => { if (!porInst.has(i.inst)) porInst.set(i.inst, []); porInst.get(i.inst).push(i); });
+      h += [...porInst.entries()].sort((a, b) => nombreInst(a[0]).localeCompare(nombreInst(b[0]))).map(([inst, arr]) => `<div class="cu-cab"><b>🏭 ${esc(nombreInst(inst))} (${arr.length})</b></div>` +
+        arr.sort((a, b) => (b.urgente - a.urgente) || a.nombre.localeCompare(b.nombre)).map(i => `<div class="cu-item${i.urgente ? ' cu-urg' : ''}"><div class="cu-txt"><b>${esc(i.nombre)}</b>${i.cantidad ? ' · ' + esc(i.cantidad) : ''}${i.urgente ? '<span class="cu-tag">URGENTE</span>' : ''}</div>${adm ? btn('comprado-item', '☐', 'Marcar como comprado', `data-inst="${esc(i.inst)}" data-id="${esc(i.id)}"`) : ''}</div>`).join('')).join('');
+    }
+    host.innerHTML = h;
+    document.querySelectorAll('#compraUnificadaScreen .cu-tab').forEach(b => b.classList.toggle('activo', b.dataset.modo === st.modo));
+  }
+
+  function textoCompartir() {
+    const items = elementos(); if (!items.length) return '🛒 Nada pendiente de comprar';
+    if (st.modo === 'producto') return '🛒 Compra unificada\n' + grupos(items).map(g => `- ${g.nombre}${total(g) !== null ? ` (total ${total(g)})` : ''}${g.urgente ? ' ⚠ URGENTE' : ''}: ` + g.partes.map(p => `${nombreInst(p.inst)}${p.cantidad ? ' ' + p.cantidad : ''}`).join(' · ')).join('\n');
+    const por = new Map(); items.forEach(i => { if (!por.has(i.inst)) por.set(i.inst, []); por.get(i.inst).push(i); });
+    return '🛒 Compra unificada\n' + [...por.entries()].map(([inst, arr]) => `${nombreInst(inst)}:\n` + arr.map(i => `  - ${i.nombre}${i.cantidad ? ' (' + i.cantidad + ')' : ''}${i.urgente ? ' ⚠' : ''}`).join('\n')).join('\n');
+  }
+
+  async function marcar(partes) {
+    const now = new Date().toISOString(), porInst = {};
+    partes.forEach(p => { (porInst[p.inst] = porInst[p.inst] || {})[`${p.id}/estado`] = 'comprada'; porInst[p.inst][`${p.id}/compradoPor`] = miNombre(); porInst[p.inst][`${p.id}/compradoEn`] = now; });
+    for (const inst of Object.keys(porInst)) await realDb.ref(`compra/${inst}/compra`).update(porInst[inst]);
+  }
+
+  async function click(ev) {
+    const t = ev.target.closest('[data-act],[data-modo]'); if (!t) return;
+    if (t.dataset.modo) { st.modo = t.dataset.modo; return render(); }
+    try {
+      if (t.dataset.act === 'compartir') {
+        const txt = textoCompartir();
+        if (navigator.share) await navigator.share({ text: txt }); else { await navigator.clipboard.writeText(txt); msg('Lista copiada al portapapeles.', true); }
+      } else if (t.dataset.act === 'comprado-grupo' && admin()) {
+        const g = grupos(elementos()).find(x => norm(x.nombre) === norm(t.dataset.k) || esc(norm(x.nombre)) === t.dataset.k); if (!g) return;
+        if (confirm(`¿Marcar «${g.nombre}» como comprado en ${g.partes.length} instalación(es)?`)) { await marcar(g.partes); msg('Marcado como comprado.', true); }
+      } else if (t.dataset.act === 'comprado-item' && admin()) {
+        await marcar([{ inst: t.dataset.inst, id: t.dataset.id }]); msg('Marcado como comprado.', true);
+      }
+    } catch (e) { if (e && e.name !== 'AbortError') msg('Error: ' + e.message, false); }
+  }
+
+  async function cargarNombres() {
+    const ids = Object.keys(st.all).filter(id => !st.nombres[id] && !guardados()[id]);
+    await Promise.all(ids.map(async id => { try { const s = await realDb.ref(`instalaciones/${id}/meta/nombre`).once('value'); if (s.val()) st.nombres[id] = s.val(); } catch (e) { /* sin permiso o inexistente */ } }));
+  }
+  function abrir() {
+    mount(); showScreen('compraUnificadaScreen');
+    if (st.ref) st.ref.off();
+    st.ref = realDb.ref('compra');
+    st.ref.on('value', async s => { st.all = s.val() || {}; await cargarNombres(); render(); },
+      e => msg('No se pudo leer la compra de todas las instalaciones (' + e.message + '). Comprueba que las reglas de Firebase están actualizadas.', false));
+  }
+
+  function mount() {
+    if (!el('cuStyles')) { const s = document.createElement('style'); s.id = 'cuStyles'; s.textContent = CSS; document.head.appendChild(s); }
+    if (!el('compraUnificadaScreen')) {
+      const scr = document.createElement('div'); scr.className = 'screen'; scr.id = 'compraUnificadaScreen';
+      scr.innerHTML = `<h1 class="title">🧾 Compra de todas las instalaciones</h1>
+        <p class="cu-nota">Reúne lo aceptado de todas las instalaciones para comprarlo en una sola visita. Las peticiones se siguen aprobando en la compra de cada instalación.</p>
+        <div class="cu-tabs"><button type="button" class="cu-tab activo" data-modo="producto">Por producto</button><button type="button" class="cu-tab" data-modo="instalacion">Por instalación</button></div>
+        <div id="cuMsg" class="cu-msg"></div><div id="cuLista"></div>
+        <button type="button" class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>`;
+      scr.addEventListener('click', click);
+      const ref = el('menuScreen'); (ref && ref.parentNode ? ref.parentNode : document.body).appendChild(scr);
+    }
+    if (!el('menuCompraUnificadaBtn')) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'button back-button'; b.id = 'menuCompraUnificadaBtn'; b.textContent = '🧾 Compra de todas las instalaciones';
+      b.addEventListener('click', abrir);
+      const ref = el('menuCompraBtn'), otro = el('menuCuadranteBtn') || el('menuCentroOperativoBtn'), menu = el('menuScreen');
+      if (ref) ref.insertAdjacentElement('afterend', b); else if (otro) otro.insertAdjacentElement('beforebegin', b); else if (menu) menu.appendChild(b);
+    }
+  }
+  const arrancar = () => { try { mount(); } catch (e) { console.warn('Compra unificada:', e); } };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
+})();
+
+/* ===== BUSCADOR DE EQUIPOS + ARREGLO «AÑADIR MANTENIMIENTO» DESDE EQUIPOS (añadir al final de app.js) ===== */
+(function () {
+  const el = id => document.getElementById(id);
+  const norm = s => String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const MAX = 40;
+
+  function buscar(texto) {
+    const q = norm(texto).trim();
+    if (q.length < 2) return null;
+    const palabras = q.split(/\s+/);
+    const lista = (window.equiposDb && window.equiposDb.equiposGuardados) || [];
+    const out = [];
+    lista.forEach((eq, i) => {
+      if (!eq) return;
+      const rec = (eq.recambios || []).map(r => r && r.nombre).join(' ');
+      const pajar = norm([eq.equipo, eq.modelo, eq.zona, eq.familia, eq.recambio, rec].join(' '));
+      if (palabras.every(p => pajar.includes(p))) out.push({ eq, i });
+    });
+    return out;
+  }
+
+  function pintar() {
+    const inp = el('equiposBuscador'), res = el('equiposResultados'), lista = el('listaEquiposGuardados');
+    if (!inp || !res || !lista) return;
+    const r = buscar(inp.value);
+    if (r === null) { res.style.display = 'none'; res.innerHTML = ''; lista.style.display = ''; return; }
+    lista.style.display = 'none';
+    res.style.display = 'block';
+    if (!r.length) { res.innerHTML = '<p class="eq-resultado-total">Sin resultados para «' + _h(inp.value.trim()) + '».</p>'; return; }
+    res.innerHTML = '<p class="eq-resultado-total">' + r.length + ' resultado(s)' + (r.length > MAX ? ' (se muestran los primeros ' + MAX + ')' : '') + '</p>' +
+      r.slice(0, MAX).map(x =>
+        '<button type="button" class="eq-resultado" data-i="' + x.i + '"><strong>' + _h(x.eq.equipo || '(sin nombre)') + '</strong>' +
+        (x.eq.modelo ? '<span>' + _h(x.eq.modelo) + '</span>' : '') +
+        '<small>' + _h(x.eq.familia || '(Sin familia)') + ' › ' + _h(x.eq.zona || '(Sin zona)') + '</small></button>').join('');
+  }
+
+  function abrir(i) {
+    const eq = window.equiposDb && window.equiposDb.equiposGuardados && window.equiposDb.equiposGuardados[i];
+    if (!eq) return;
+    const inp = el('equiposBuscador'); if (inp) inp.value = '';
+    pintar();
+    window._equiposNavIr('equipo', eq.familia || '(Sin familia)', eq.zona || '(Sin zona)');
+    setTimeout(() => {
+      const r = document.querySelector('#listaEquiposGuardados .equipo-record[data-equipo-index="' + i + '"]');
+      if (!r) return;
+      const d = r.querySelector('.eq-detail'); if (d) d.classList.add('eq-detail-open');
+      r.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+  }
+
+  function iniciar() {
+    const inp = el('equiposBuscador'), res = el('equiposResultados');
+    if (inp && !inp.dataset.listo) {
+      inp.dataset.listo = '1';
+      inp.addEventListener('input', pintar);
+      if (res) res.addEventListener('click', e => { const b = e.target.closest('.eq-resultado'); if (b) abrir(Number(b.dataset.i)); });
+    }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
+
+  // «+ Añadir mantenimiento» desde la ficha de un equipo: ahora lleva al formulario de Periodicidad y lo abre
+  if (typeof _abrirPreventivoConEquipo === 'function') {
+    window._abrirPreventivoConEquipo = function (nombreEquipo) {
+      _origenAltaMantenimiento = { desde: 'equipos', equipo: nombreEquipo, familia: _equiposNav.familia, zona: _equiposNav.zona };
+      showScreen('adminPeriodicidadScreen');
+      const campo = el('equipoPeriodicidad'); if (campo) campo.value = nombreEquipo;
+      const panel = el('periodicidadAlta'); if (panel) panel.open = true;
+    };
+  }
 })();

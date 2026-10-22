@@ -107,6 +107,7 @@
   <div class="screen" id="menuScreen">
     <h1 class="title">Menú</h1>
     <p class="title-sub">Seleccione módulo</p>
+    <p class="menu-grupo">Trabajo</p>
 
     <div class="menu-grid">
       <button class="menu-btn mod-incidencias" id="incidenciasBtn">
@@ -139,6 +140,7 @@
       </button>
     </div>
 
+    <p class="menu-grupo menu-grupo-gestion">Gestión</p>
     <button class="button back-button" id="menuCentroOperativoBtn" onclick="showScreen('centroOperativoScreen');renderCentroOperativo()">🖥️ Centro Operativo</button>
     <button class="button back-button" id="menuAdminBtn" style="display:none">⚙️ Administración</button>
     <button class="button back-button" onclick="volverAInstalaciones()">← Atrás</button>
@@ -198,37 +200,41 @@
   <!-- ── Administración: Periodicidad de mantenimiento ── -->
   <div class="screen" id="adminPeriodicidadScreen">
     <h1 class="title">📅 Periodicidad de mantenimiento</h1>
-    <div class="form-container">
-      <div class="form-group">
-        <label>Fecha</label>
-        <input type="date" id="fechaMantenimiento">
-      </div>
-      <div class="form-group">
-        <label>Equipo</label>
-        <input type="text" id="equipoPeriodicidad" list="datalist-equipos" placeholder="Nombre del equipo">
-        <button type="button" class="button" style="margin-top:6px;width:100%" onclick="equipoPicker.abrir('equipoPeriodicidad')">🔍 Buscar equipo por zona/familia</button>
-      </div>
-      <div class="form-group">
-        <label>Acción de mantenimiento</label>
-        <input type="text" id="accionMantenimiento" placeholder="Descripción de la acción">
-      </div>
-      <div class="form-group">
-        <label>Periodicidad (días)</label>
-        <input type="number" id="periodicidadDias" min="1" placeholder="Nº de días">
-      </div>
-      <div class="form-group">
-        <label>Tipo</label>
-        <select id="tipoMantenimiento">
-          <option value="preventivo">Preventivo equipos</option>
-          <option value="trabajo">Trabajo periódico</option>
-        </select>
-      </div>
 
-      <button class="button" onclick="agregarMantenimientoPeriodico()">+ Agregar mantenimiento periódico</button>
-      <button class="button" id="toggleListaMantenimientos" onclick="toggleListaMantenimientos()" style="margin-top:8px">
-        Mostrar mantenimientos
-      </button>
-      <div id="listaMantenimientosPeriodicos" style="display: none;"></div>
+    <details class="form-container plegable" id="periodicidadAlta">
+      <summary>+ Añadir mantenimiento periódico</summary>
+      <div class="plegable-cuerpo form-grid">
+        <div class="form-group span-2">
+          <label>Equipo</label>
+          <input type="text" id="equipoPeriodicidad" list="datalist-equipos" placeholder="Nombre del equipo">
+          <button type="button" class="button" style="margin-top:6px;width:100%" onclick="equipoPicker.abrir('equipoPeriodicidad')">🔍 Buscar equipo por zona/familia</button>
+        </div>
+        <div class="form-group span-2">
+          <label>Acción de mantenimiento</label>
+          <input type="text" id="accionMantenimiento" placeholder="Descripción de la acción">
+        </div>
+        <div class="form-group">
+          <label>Fecha</label>
+          <input type="date" id="fechaMantenimiento">
+        </div>
+        <div class="form-group">
+          <label>Periodicidad (días)</label>
+          <input type="number" id="periodicidadDias" min="1" placeholder="Nº de días">
+        </div>
+        <div class="form-group">
+          <label>Tipo</label>
+          <select id="tipoMantenimiento">
+            <option value="preventivo">Preventivo equipos</option>
+            <option value="trabajo">Trabajo periódico</option>
+          </select>
+        </div>
+        <button class="button" onclick="agregarMantenimientoPeriodico()">+ Agregar mantenimiento</button>
+      </div>
+    </details>
+
+    <div class="form-container">
+      <button class="button" id="toggleListaMantenimientos" onclick="toggleListaMantenimientos()">Mostrar mantenimientos</button>
+      <div id="listaMantenimientosPeriodicos"></div>
     </div>
     <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
   </div>
@@ -659,53 +665,64 @@
     <h1 class="title">Equipos</h1>
     <p class="title-sub">Inventario y recambios</p>
 
-    <div class="form-container">
-      <h3>Importar biblioteca de equipos</h3>
-      <div class="form-group">
-        <label>Archivo JSON</label>
-        <input type="file" id="equiposJsonFileInput" accept=".json">
+    <details class="form-container plegable">
+      <summary>Importar y exportar biblioteca</summary>
+      <div class="plegable-cuerpo form-grid">
+        <div>
+          <div class="form-group">
+            <label>Archivo JSON</label>
+            <input type="file" id="equiposJsonFileInput" accept=".json">
+          </div>
+          <button class="button" onclick="importarBibliotecaEquipos()">↑ Importar JSON</button>
+        </div>
+        <div>
+          <div class="form-group">
+            <label>Importar CSV</label>
+            <input type="file" id="equiposCSVFileInput" accept=".csv,.txt">
+          </div>
+          <button class="button" onclick="(function(){const f=document.getElementById('equiposCSVFileInput').files[0];if(!f){alert('Seleccione un archivo CSV');return;}const r=new FileReader();r.onload=e=>importarCSVEquipos(e.target.result);r.readAsText(f,'UTF-8');})()">↑ Importar CSV</button>
+        </div>
+        <button class="button" onclick="exportarBibliotecaEquipos()">↓ Exportar biblioteca</button>
+        <button class="button back-button" onclick="restaurarBackupEquiposLocal()">↺ Restaurar backup local</button>
       </div>
-      <button class="button" onclick="importarBibliotecaEquipos()">↑ Importar JSON</button>
-      <div class="form-group" style="margin-top:8px">
-        <label>Importar CSV</label>
-        <input type="file" id="equiposCSVFileInput" accept=".csv,.txt">
-      </div>
-      <button class="button" onclick="(function(){const f=document.getElementById('equiposCSVFileInput').files[0];if(!f){alert('Seleccione un archivo CSV');return;}const r=new FileReader();r.onload=e=>importarCSVEquipos(e.target.result);r.readAsText(f,'UTF-8');})()">↑ Importar CSV</button>
-      <button class="button" style="margin-top:8px" onclick="exportarBibliotecaEquipos()">↓ Exportar biblioteca</button>
-      <button class="button back-button" style="margin-top:8px" onclick="restaurarBackupEquiposLocal()">↺ Restaurar backup local</button>
-    </div>
+    </details>
 
-    <div class="form-container">
-      <h3>Añadir equipo manualmente</h3>
-      <div class="form-group">
-        <label>Familia</label>
-        <input type="text" id="equiposFamilia" placeholder="Nombre de la familia">
+    <details class="form-container plegable">
+      <summary>+ Añadir equipo manualmente</summary>
+      <div class="plegable-cuerpo form-grid">
+        <div class="form-group">
+          <label>Familia</label>
+          <input type="text" id="equiposFamilia" placeholder="Nombre de la familia">
+        </div>
+        <div class="form-group">
+          <label>Zona</label>
+          <input type="text" id="equiposZona" placeholder="Nombre de la zona">
+        </div>
+        <div class="form-group">
+          <label>Equipo</label>
+          <input type="text" id="equiposEquipo" placeholder="Nombre del equipo">
+        </div>
+        <div class="form-group">
+          <label>Modelo</label>
+          <input type="text" id="equiposItem" placeholder="Nombre del modelo">
+        </div>
+        <div class="form-group">
+          <label>Recambio</label>
+          <input type="text" id="equiposRecambio" placeholder="Nombre del recambio">
+        </div>
+        <div class="form-group">
+          <label>Cantidad en stock</label>
+          <input type="number" id="equiposCantidad" min="0" placeholder="0">
+        </div>
+        <button class="button save-button span-2" onclick="guardarEquipo()">+ Guardar equipo</button>
       </div>
-      <div class="form-group">
-        <label>Zona</label>
-        <input type="text" id="equiposZona" placeholder="Nombre de la zona">
-      </div>
-      <div class="form-group">
-        <label>Equipo</label>
-        <input type="text" id="equiposEquipo" placeholder="Nombre del equipo">
-      </div>
-      <div class="form-group">
-        <label>Modelo</label>
-        <input type="text" id="equiposItem" placeholder="Nombre del modelo">
-      </div>
-      <div class="form-group">
-        <label>Recambio</label>
-        <input type="text" id="equiposRecambio" placeholder="Nombre del recambio">
-      </div>
-      <div class="form-group">
-        <label>Cantidad en stock</label>
-        <input type="number" id="equiposCantidad" min="0" placeholder="0">
-      </div>
-      <button class="button save-button" onclick="guardarEquipo()">+ Guardar equipo</button>
-    </div>
+    </details>
 
     <div class="form-container" id="equiposGuardadosList">
-      <h3>Equipos guardados</h3>
+      <div class="form-group buscador-lista">
+        <input type="search" id="equiposBuscador" placeholder="🔍 Buscar equipo, zona, modelo o recambio…" autocomplete="off">
+      </div>
+      <div id="equiposResultados" style="display:none"></div>
       <div id="listaEquiposGuardados"></div>
     </div>
 
