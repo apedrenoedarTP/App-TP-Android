@@ -1737,6 +1737,7 @@ async function showScreen(screenId) {
   if (screenId === 'adminPeriodicidadScreen') {
     updateAdminLists();
   }
+  if (screenId === 'almacenScreen' && window.almacenAlEntrar) window.almacenAlEntrar();
   if (screenId === 'adminInstalacionesScreen') {
     cargarInstalacionesAdmin();
   }
@@ -1800,7 +1801,7 @@ function updateAdminLists() {
 // Lista de recambios en modo lectura
 function generarListaRecambios(recambios) {
   return (recambios || []).map(r => `
-    <div class="spare-part-item"><span>${_h(r.nombre)}: ${_h(r.cantidad)} unidades</span></div>
+    <div class="spare-part-item"><span>${_h(r.nombre)}: ${_h(r.cantidad)} unidades${r.ubicacion ? ' · 📍 ' + _h(r.ubicacion) : ''}</span></div>
   `).join('');
 }
 
@@ -2554,7 +2555,6 @@ async function addSparePart(orderId) {
   order.spareParts.push({ nombre: sparePart, cantidad: quantity });
 
   try {
-    realDb.ref(`instalaciones/${INST()}/stock`).set(window.equiposDb.equiposGuardados);
     realDb.ref(`instalaciones/${INST()}/stock`).set(window.equiposDb.equiposGuardados);
     realDb.ref(woRef).set(woArr);
     localStorage.setItem(LS_KEY_EQUIPOS, JSON.stringify(window.equiposDb));
@@ -3365,8 +3365,6 @@ async function guardarEquipo() {
     if (!window.equiposDb.equiposGuardados) window.equiposDb.equiposGuardados = [];
     window.equiposDb.equiposGuardados.push({ familia, zona, equipo, modelo, recambios: [{ nombre: recambio, cantidad }] });
     await realDb.ref(`instalaciones/${INST()}/stock`).set(window.equiposDb.equiposGuardados);
-    await realDb.ref(`instalaciones/${INST()}/stock`).set(window.equiposDb.equiposGuardados);
-    realDb.ref(`instalaciones/${INST()}/stock`).set(window.equiposDb.equiposGuardados);
     guardarEquiposDb();
 
     ['equiposFamilia', 'equiposZona', 'equiposEquipo', 'equiposItem', 'equiposRecambio', 'equiposCantidad']
@@ -3393,7 +3391,6 @@ async function eliminarEquipo(originalIndex) {
     const equipos = [...window.equiposDb.equiposGuardados];
     equipos.splice(originalIndex, 1);
     window.equiposDb.equiposGuardados = equipos;
-    await realDb.ref(`instalaciones/${INST()}/stock`).set(equipos);
     await realDb.ref(`instalaciones/${INST()}/stock`).set(equipos);
     guardarEquiposDb();
     actualizarListaEquipos();
@@ -3447,7 +3444,8 @@ async function guardarEdicionEquipo(index) {
       alert('Por favor complete todos los campos de recambios correctamente');
       return;
     }
-    recambios.push({ nombre, cantidad });
+    const prev = (equipoActual.recambios || []).find(x => x && x.nombre === nombre) || {};   // conserva ubicación y mínimo
+    recambios.push(Object.assign({}, prev.ubicacion ? { ubicacion: prev.ubicacion } : {}, prev.minimo ? { minimo: prev.minimo } : {}, { nombre, cantidad }));
   }
 
   try {
@@ -3582,7 +3580,6 @@ function importarBibliotecaEquipos() {
 
       // 5. Persistir en Firebase (misma ruta que siempre) y localStorage
       await realDb.ref(`instalaciones/${INST()}/stock`).set(window.equiposDb.equiposGuardados);
-    await realDb.ref(`instalaciones/${INST()}/stock`).set(window.equiposDb.equiposGuardados);
       await realDb.ref(`instalaciones/${INST()}/equiposDb`).set(window.equiposDb);
       guardarEquiposDb();
       autoBackupEquipos();
@@ -3772,10 +3769,7 @@ async function importarCSVEquipos(csvText) {
 
     // Persistir Firebase — solo las claves de equiposDb, sin tocar edarData
     await realDb.ref(`instalaciones/${INST()}/equiposDb`).set(window.equiposDb);
-    await realDb.ref(`instalaciones/${INST()}/equiposDb`).set(window.equiposDb);
     await realDb.ref(`instalaciones/${INST()}/stock`).set(window.equiposDb.equiposGuardados);
-    await realDb.ref(`instalaciones/${INST()}/stock`).set(window.equiposDb.equiposGuardados);
-    realDb.ref(`instalaciones/${INST()}/stock`).set(window.equiposDb.equiposGuardados);
 
     // Refrescar UI
     actualizarListaEquipos();
@@ -7014,6 +7008,7 @@ function _cqMontar() {
 #compraScreen .cp-msg{min-height:20px;font-size:.85rem;margin:0 0 8px}`;
 
   const cp = { items: {}, sug: {}, ref: null, refS: null };
+  window._cpItems = () => cp.items;   // la usa el desplegable «Elegir del almacén»
   const esc = s => _cqEsc(String(s == null ? '' : s));
   const admin = () => localStorage.getItem('usuarioRol') === 'admin';
   const nombre = () => localStorage.getItem('usuarioNombre') || 'Usuario';
@@ -7129,11 +7124,14 @@ function _cqMontar() {
     if (['aceptar', 'aceptar-edit', 'rechazar', 'editar', 'comprado', 'reponer', 'vaciar'].includes(act) && !admin()) return msg('Solo el administrador puede hacer esto.', false);
     const ref = `${base()}/compra/${id}`, i = cp.items[id];
     try {
-      if (act === 'add') {
+      if (act === 'elegir') {
+        if (window.cpElegirAlmacen) window.cpElegirAlmacen();
+      } else if (act === 'add') {
         const n = el('cpNombre').value.trim(); if (!n) return msg('Escribe qué hay que comprar.', false);
         if (Object.values(cp.items).some(x => ['solicitada', 'aceptada'].includes(est(x)) && String(x.nombre).toLowerCase() === n.toLowerCase())) return msg('Ya está en la lista o pendiente de revisión.', false);
         const dato = { nombre: n, cantidad: el('cpCant').value.trim(), urgente: el('cpUrg').checked, autor: nombre(), uid: uidAct(), fecha: now, estado: admin() ? 'aceptada' : 'solicitada' };
         if (admin()) { dato.resueltoPor = nombre(); dato.resueltoEn = now; }
+        const vinc = window._cpVinculo; if (vinc && vinc.nombre === n) Object.assign(dato, vinc.datos); window._cpVinculo = null;   // petición enlazada con el artículo elegido
         realDb.ref(`${base()}/compra`).push(dato).catch(e => msg('Error al añadir: ' + e.message, false));
         el('cpNombre').value = ''; el('cpCant').value = ''; el('cpUrg').checked = false;
         msg(admin() ? 'Añadido a la lista.' : 'Petición enviada. Administración la revisará y te avisará.', true);
@@ -7187,6 +7185,7 @@ function _cqMontar() {
         <div id="cpMsg" class="cp-msg"></div>
         <div class="cp-panel activo" data-panel="compra">
           <p class="cp-nota">Pide aquí lo que falta y marca «Urgente» solo si no puede esperar. Administración revisará tu petición y verás si se acepta, se ajusta o no se acepta; también te llegará un aviso.</p>
+          <div class="cp-elegir"><button type="button" class="button" data-act="elegir">📦 Elegir del almacén o de los recambios</button></div>
           <div class="cp-add"><input type="text" id="cpNombre" placeholder="¿Qué hay que comprar?" maxlength="80"><input type="text" id="cpCant" class="cp-cant" placeholder="Cantidad" maxlength="30">
             <label class="cp-chkl"><input type="checkbox" id="cpUrg"> Urgente</label><button type="button" class="button" data-act="add">➕ Pedir</button></div>
           <div id="cpLista"></div>
@@ -8123,7 +8122,6 @@ function _cqMontar() {
   const arrancar = () => { try { mount(); } catch (e) { console.warn('Compra unificada:', e); } };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
 })();
-
 /* ===== BUSCADOR DE EQUIPOS + ARREGLO «AÑADIR MANTENIMIENTO» DESDE EQUIPOS (añadir al final de app.js) ===== */
 (function () {
   const el = id => document.getElementById(id);
@@ -8138,7 +8136,7 @@ function _cqMontar() {
     const out = [];
     lista.forEach((eq, i) => {
       if (!eq) return;
-      const rec = (eq.recambios || []).map(r => r && r.nombre).join(' ');
+      const rec = (eq.recambios || []).map(r => r && (r.nombre + ' ' + (r.ubicacion || ''))).join(' ');
       const pajar = norm([eq.equipo, eq.modelo, eq.zona, eq.familia, eq.recambio, rec].join(' '));
       if (palabras.every(p => pajar.includes(p))) out.push({ eq, i });
     });
@@ -8193,4 +8191,732 @@ function _cqMontar() {
       const panel = el('periodicidadAlta'); if (panel) panel.open = true;
     };
   }
+})();
+
+/* =============================================================================
+   ALMACÉN GENERAL — recambios y consumibles (no ligados a un equipo)
+   Datos: instalaciones/{INST}/almacen/{idArticulo} = {nombre, categoria, cantidad, minimo,
+          unidad, ubicacion, notas, actualizado, por}. Se guarda artículo a artículo y se carga
+          solo al entrar en la pantalla (sin escucha permanente, para no sumar descargas).
+============================================================================= */
+(function () {
+  const el = id => document.getElementById(id);
+  const norm = s => String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const esAdmin = () => localStorage.getItem('usuarioRol') === 'admin';
+  const quien = () => localStorage.getItem('usuarioNombre') || '';
+  const ahora = () => new Date().toISOString();
+  const ruta = () => 'instalaciones/' + INST() + '/almacen';
+  const CATS = { recambio: 'Recambio', taller: 'Taller', laboratorio: 'Laboratorio', pintura: 'Pinturas', limpieza: 'Limpieza', otro: 'Otros' };
+  const uidAct = () => (typeof auth !== 'undefined' && auth.currentUser && auth.currentUser.uid) || localStorage.getItem('usuarioUid') || '';
+  const PAGINA = 30;
+  const SIN = 'Sin ubicación';
+
+  let items = [];
+  let compras = {};   // peticiones de compra de esta instalación (para saber qué artículos ya están pedidos)
+  let instCargada = null;
+  let cargadoEn = 0;
+  let abierto = null;
+  let grupoActual = null;
+  let subActual = null;
+  const filtro = { texto: '', cat: 'ubic', fam: '', orden: 'nombre', limite: PAGINA };
+
+  // Código canónico: MAYÚSCULAS, sin espacios alrededor del guion, y «/», «:» o «·» convertidos en «-».
+  //   «L3»     → artículo grande, identificado solo por la leja
+  //   «L3-C5»  → artículo pequeño dentro del contenedor C5 de la leja L3 (lo que va tras el primer guion es el contenedor)
+  const normUbic = u => String(u || '').toUpperCase().replace(/[\/:·]/g, '-').replace(/\s*-\s*/g, '-').replace(/\s+/g, ' ').replace(/^-+|-+$/g, '').trim();
+  const partes = a => { const u = normUbic(a.ubicacion); return u ? u.split('-') : []; };
+  const grupoDe = a => partes(a)[0] || SIN;
+  const subDe = a => partes(a).slice(1).join('-');
+  const bajoMinimo = a => Number(a.minimo) > 0 && Number(a.cantidad) <= Number(a.minimo);
+  const cmpNombre = (a, b) => norm(a.nombre).localeCompare(norm(b.nombre), undefined, { numeric: true });
+  const ORDEN = {
+    nombre: cmpNombre,
+    ubicacion: (a, b) => (a.ubicacion ? 0 : 1) - (b.ubicacion ? 0 : 1) ||
+      norm(a.ubicacion).localeCompare(norm(b.ubicacion), undefined, { numeric: true }) || cmpNombre(a, b),
+    cantidad: (a, b) => Number(a.cantidad) - Number(b.cantidad) || cmpNombre(a, b)
+  };
+
+  const baseItems = () => filtro.fam ? items.filter(a => a.categoria === filtro.fam) : items;
+  // Cantidad a pedir: la indicada en el artículo; si no hay, se repone hasta el doble del mínimo (mínimo 1)
+  const sugerido = a => { const p = Number(a.pedido); return p > 0 ? p : Math.max(1, Math.ceil(Number(a.minimo || 0) * 2 - Number(a.cantidad || 0))); };
+  const estCompra = c => c.estado || (c.comprado ? 'comprada' : 'aceptada');
+  const fechaCorta = iso => String(iso || '').slice(0, 10).split('-').reverse().join('/');
+  // Petición de compra enlazada con un artículo: la abierta (pendiente o aceptada) manda sobre la ya comprada
+  function compraDe(a) {
+    let mejor = null;
+    Object.keys(compras).forEach(k => {
+      const c = compras[k]; if (!c || c.almacenId !== a.id) return;
+      const e = estCompra(c), abierta = e === 'solicitada' || e === 'aceptada';
+      if (abierta) mejor = Object.assign({ id: k, e }, c);
+      else if (e === 'comprada' && (!mejor || (mejor.e === 'comprada' && (c.compradoEn || '') > (mejor.compradoEn || '')))) mejor = Object.assign({ id: k, e }, c);
+    });
+    return mejor;
+  }
+  const abierta = a => { const c = compraDe(a); return !!c && (c.e === 'solicitada' || c.e === 'aceptada'); };
+
+  function filtrados() {
+    const palabras = norm(filtro.texto).trim().split(/\s+/).filter(Boolean);
+    return baseItems().filter(a => {
+      if (filtro.cat === 'bajo') { if (!bajoMinimo(a)) return false; }
+      
+      if (!palabras.length) return true;
+      const pajar = norm([a.nombre, a.ubicacion, a.notas, CATS[a.categoria]].join(' '));
+      return palabras.every(p => pajar.includes(p));
+    }).sort(ORDEN[filtro.orden] || cmpNombre);
+  }
+
+  // ── Pintado ────────────────────────────────────────────────────────────────
+  function htmlEdicion(a) {
+    const op = (v, t) => '<option value="' + v + '"' + (a.categoria === v ? ' selected' : '') + '>' + t + '</option>';
+    return '<div class="alm-edicion form-grid">' +
+      '<div class="form-group span-2"><label>Nombre</label><input type="text" data-f="nombre" maxlength="80" value="' + _h(a.nombre) + '"></div>' +
+      '<div class="form-group"><label>Familia</label><select data-f="categoria">' + Object.keys(CATS).map(k => op(k, CATS[k])).join('') + '</select></div>' +
+      '<div class="form-group"><label>Unidad</label><input type="text" data-f="unidad" maxlength="12" list="almacen-unidades" value="' + _h(a.unidad || 'ud') + '"></div>' +
+      '<div class="form-group"><label>Cantidad</label><input type="number" data-f="cantidad" min="0" step="any" value="' + _h(a.cantidad) + '"></div>' +
+      '<div class="form-group"><label>Mínimo (aviso)</label><input type="number" data-f="minimo" min="0" step="any" value="' + _h(a.minimo || 0) + '"></div>' +
+      '<div class="form-group"><label>Cantidad a pedir</label><input type="number" data-f="pedido" min="0" step="any" placeholder="Vacío = 2× mínimo" value="' + _h(a.pedido || '') + '"></div>' +
+      '<div class="form-group"><label>Ubicación</label><input type="text" data-f="ubicacion" maxlength="30" list="almacen-ubicaciones" placeholder="L3 o L3-C5" value="' + _h(a.ubicacion || '') + '"></div>' +
+      '<div class="form-group span-2"><label>Notas</label><input type="text" data-f="notas" maxlength="200" value="' + _h(a.notas || '') + '"></div>' +
+      '<button type="button" class="button" data-accion="guardar">Guardar cambios</button>' +
+      '<button type="button" class="button back-button" data-accion="cerrar">Cancelar</button>' +
+      '<button type="button" class="button back-button span-2" data-accion="pedir">🛒 Pedir reposición…</button>' +
+      (esAdmin() ? '<button type="button" class="button back-button span-2" data-accion="borrar">🗑 Eliminar artículo</button>' : '') +
+      '<p class="alm-meta span-2">Última modificación: ' + _h(a.actualizado ? new Date(a.actualizado).toLocaleString() : '—') + (a.por ? ' · ' + _h(a.por) : '') + '</p>' +
+      '</div>';
+  }
+
+  const cantNum = c => { const m = String(c.cantidad || '').match(/[\d.,]+/); return m ? Number(m[0].replace(',', '.')) || 1 : 1; };
+
+  function htmlCompra(a) {
+    const c = compraDe(a);
+    if (c && c.e === 'solicitada') return '<small class="alm-compra">🛒 Pedida · pendiente de aprobar</small>';
+    if (c && c.e === 'aceptada') return '<small class="alm-compra alm-compra-ok">🛒 En la lista de la compra · ' + _h(c.cantidad || '') + '</small>';
+    const rec = c && c.e === 'comprada' && a.ultimaRecepcion === c.id;
+    const comprada = c && c.e === 'comprada' ? '<small class="alm-compra alm-compra-ok">🛒 Comprada el ' + _h(fechaCorta(c.compradoEn)) + (rec ? ' · recibida ✓' : '') + '</small>' +
+      (rec ? '' : '<button type="button" class="alm-pedir alm-recibir" data-accion="recibir">📦 Recibido: sumar ' + _h(cantNum(c)) + ' ' + _h(a.unidad || 'ud') + '</button>') : '';
+    return comprada + (bajoMinimo(a) ? '<button type="button" class="alm-pedir" data-accion="pedir">🛒 Pedir ' + _h(sugerido(a)) + ' ' + _h(a.unidad || 'ud') + '</button>' : '');
+  }
+
+  function htmlFila(a) {
+    const sub = (CATS[a.categoria] || '') + (Number(a.minimo) > 0 ? ' · mín. ' + a.minimo : '');
+    return '<div class="alm-item' + (bajoMinimo(a) ? ' alm-bajo' : '') + '" data-id="' + _h(a.id) + '">' +
+      '<div class="alm-fila">' +
+        '<div class="alm-info" data-accion="abrir"><strong>' + _h(a.nombre) + '</strong><small>' + _h(sub) + '</small>' + htmlCompra(a) + '</div>' +
+        (a.ubicacion ? '<span class="alm-ubic">📍 ' + _h(a.ubicacion) + '</span>' : '<span class="alm-ubic alm-sin">Sin ubicación</span>') +
+        '<div class="alm-cant">' +
+          '<button type="button" class="alm-btn" data-accion="menos" aria-label="Restar uno">−</button>' +
+          '<span class="alm-num">' + _h(a.cantidad) + '<small>' + _h(a.unidad || 'ud') + '</small></span>' +
+          '<button type="button" class="alm-btn" data-accion="mas" aria-label="Sumar uno">+</button>' +
+        '</div>' +
+      '</div>' + (abierto === a.id ? htmlEdicion(a) : '') + '</div>';
+  }
+
+  function pintarCabecera() {
+    const b = baseItems(), n = b.length, bajo = b.filter(bajoMinimo).length;
+    const nGrupos = new Set(b.map(grupoDe)).size;
+    const chips = [['ubic', 'Ubicaciones', nGrupos], ['todo', 'Todo', n], ['bajo', 'Por reponer', bajo]];
+    const cont = el('almacenChips');
+    if (cont) cont.innerHTML = chips.map(c => '<button type="button" class="alm-chip' + (filtro.cat === c[0] ? ' alm-chip-on' : '') + (c[0] === 'bajo' && c[2] ? ' alm-chip-alerta' : '') + '" data-cat="' + c[0] + '">' + c[1] + ' (' + c[2] + ')</button>').join('');
+    const est = el('almacenEstado');
+    if (est) est.textContent = n + ' artículo(s)' + (bajo ? ' · ' + bajo + ' por reponer' : '') + (cargadoEn ? ' · cargado a las ' + new Date(cargadoEn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '');
+    const dl = el('almacen-ubicaciones');
+    if (dl) dl.innerHTML = [...new Set(items.map(a => normUbic(a.ubicacion)).filter(Boolean))].sort().map(u => '<option value="' + _h(u) + '">').join('');
+  }
+
+  function resumen(lista, clave, conContenedores) {
+    const m = new Map();
+    lista.forEach(a => {
+      const k = clave(a);
+      const o = m.get(k) || { n: 0, bajo: 0, cs: new Set() };
+      o.n++; if (bajoMinimo(a)) o.bajo++; if (conContenedores && subDe(a)) o.cs.add(subDe(a));
+      m.set(k, o);
+    });
+    m.forEach(o => { o.conts = o.cs.size; });
+    return m;
+  }
+
+  function htmlTarjetas(mapa, attr) {
+    const claves = [...mapa.keys()].sort((x, y) => (x === SIN ? 1 : 0) - (y === SIN ? 1 : 0) || x.localeCompare(y, undefined, { numeric: true }));
+    return '<div class="alm-grupos">' + claves.map(k => {
+      const o = mapa.get(k);
+      return '<button type="button" class="alm-grupo' + (o.bajo ? ' alm-grupo-alerta' : '') + '" data-' + attr + '="' + _h(k) + '"><strong>' + _h(k) + '</strong><span>' +
+        o.n + ' artículo(s)' + (o.conts ? ' · ' + o.conts + ' contenedor(es)' : '') + '</span>' + (o.bajo ? '<em>' + o.bajo + ' bajo mínimo</em>' : '') + '</button>';
+    }).join('') + '</div>';
+  }
+
+  function htmlNav(titulo, n, atras, acciones) {
+    return '<div class="alm-nav"><button type="button" class="alm-volver" data-accion="volver">‹ ' + _h(atras) + '</button><strong>' + _h(titulo) + '</strong><span>' + n + ' artículo(s)</span>' +
+      (acciones ? '<button type="button" class="alm-volver alm-accion" data-accion="anadir-aqui">+ Añadir aquí</button><button type="button" class="alm-volver alm-accion" data-accion="mover">✎ Mover / renombrar</button>' : '') + '</div>';
+  }
+
+  function pintarLista() {
+    const cont = el('almacenLista'); if (!cont) return;
+    const orden = el('almacenOrden') && el('almacenOrden').parentElement;
+    if (!items.length) { if (orden) orden.style.display = 'none'; cont.innerHTML = '<p class="alm-vacio">Aún no hay artículos en el almacén. Añade el primero con «+ Añadir artículo» o importa un CSV.</p>'; return; }
+    const buscando = norm(filtro.texto).trim() !== '';
+    const porUbic = !buscando && filtro.cat === 'ubic';
+    if (orden) orden.style.display = porUbic ? 'none' : '';
+    if (porUbic && !grupoActual) { cont.innerHTML = htmlTarjetas(resumen(baseItems(), grupoDe, true), 'g'); return; }
+    let l = filtrados(), cab = '', tarjetas = '', titulo = '';
+    if (porUbic) {
+      const enGrupo = l.filter(a => grupoDe(a) === grupoActual);
+      if (!enGrupo.length) { grupoActual = null; subActual = null; pintarLista(); return; }
+      const acciones = grupoActual !== SIN;
+      if (subActual) {
+        l = enGrupo.filter(a => subDe(a) === subActual).sort(ORDEN.ubicacion);
+        if (!l.length) { subActual = null; pintarLista(); return; }
+        cab = htmlNav(grupoActual + ' › ' + subActual, l.length, grupoActual, acciones);
+      } else {
+        l = enGrupo.filter(a => !subDe(a)).sort(ORDEN.ubicacion);
+        const cs = resumen(enGrupo.filter(a => subDe(a)), subDe, false);
+        cab = htmlNav(grupoActual, enGrupo.length, 'Ubicaciones', acciones);
+        if (cs.size) { tarjetas = '<h4 class="alm-sec">Contenedores (' + cs.size + ')</h4>' + htmlTarjetas(cs, 's'); if (l.length) titulo = '<h4 class="alm-sec">En la leja (' + l.length + ')</h4>'; }
+      }
+    }
+    if (filtro.cat === 'bajo' && !buscando) {
+      const faltan = l.filter(a => !abierta(a)).length;
+      cab = '<div class="alm-barra-rep"><span>' + l.length + ' por reponer' + (l.length - faltan ? ' · ' + (l.length - faltan) + ' ya pedidos' : '') + '</span>' +
+        (faltan ? '<button type="button" class="button alm-pedir-todo" data-accion="pedir-todo">🛒 Pedir todo lo que falta (' + faltan + ')</button>' : '') + '</div>';
+    }
+    if (!l.length && !tarjetas) { cont.innerHTML = cab + '<p class="alm-vacio">' + (filtro.cat === 'bajo' ? 'No hay nada por reponer ✅' : 'Sin resultados con esos filtros.') + '</p>'; return; }
+    const ver = l.slice(0, filtro.limite);
+    cont.innerHTML = cab + tarjetas + titulo + ver.map(htmlFila).join('') +
+      (ver.length < l.length ? '<button type="button" class="button alm-mas" data-accion="mas-resultados">Mostrar más (' + (l.length - ver.length) + ' restantes)</button>' : '');
+  }
+
+  function pintar() { pintarCabecera(); pintarLista(); }
+
+  function refrescarFila(a) {
+    const fila = [...document.querySelectorAll('#almacenLista .alm-item')].find(r => r.dataset.id === a.id);
+    if (fila) fila.outerHTML = htmlFila(a);
+    pintarCabecera();
+  }
+
+  // ── Carga ──────────────────────────────────────────────────────────────────
+  async function cargar(forzar) {
+    if (instCargada !== INST()) { items = []; compras = {}; cargadoEn = 0; abierto = null; grupoActual = null; subActual = null; instCargada = INST(); }
+    if (!forzar && cargadoEn && Date.now() - cargadoEn < 120000) { pintar(); return; }
+    const est = el('almacenEstado'); if (est) est.textContent = 'Cargando…';
+    try {
+      const [sa, sc] = await Promise.all([realDb.ref(ruta()).once('value'), realDb.ref('compra/' + INST() + '/compra').once('value').catch(() => null)]);
+      const v = sa.val() || {};
+      compras = (sc && sc.val()) || {};
+      items = Object.keys(v).map(id => { const a = Object.assign({ id }, v[id]); if (a.categoria === 'consumible' || !CATS[a.categoria]) a.categoria = a.categoria === 'recambio' ? 'recambio' : 'taller'; return a; });
+      cargadoEn = Date.now();
+    } catch (e) {
+      if (est) est.textContent = 'No se pudo cargar el almacén: ' + e.message;
+      return;
+    }
+    pintar();
+  }
+  window.almacenAlEntrar = function () { cargar(false); };
+  // Datos para el desplegable de Compra (usa la misma caché de 2 minutos)
+  window.almacenDatos = async function () { await cargar(false); return { items: items.slice(), fam: CATS, bajo: bajoMinimo, sugerido }; };
+
+  // ── Lectura del formulario (alta y edición) ────────────────────────────────
+  function leerCampos(cont) {
+    const g = f => { const e = cont.querySelector('[data-f="' + f + '"]'); return e ? e.value.trim() : ''; };
+    const nombre = g('nombre');
+    if (!nombre) { alert('Escribe el nombre del artículo'); return null; }
+    const cantidad = Number(g('cantidad') || 0), minimo = Number(g('minimo') || 0);
+    if (!(cantidad >= 0) || !(minimo >= 0)) { alert('La cantidad y el mínimo deben ser números iguales o mayores que 0'); return null; }
+    return {
+      nombre: nombre.slice(0, 80), categoria: CATS[g('categoria')] ? g('categoria') : 'recambio',
+      cantidad, minimo, pedido: Math.max(0, Number(g('pedido') || 0)) || 0, unidad: (g('unidad') || 'ud').slice(0, 12), ubicacion: normUbic(g('ubicacion')).slice(0, 30), notas: g('notas').slice(0, 200)
+    };
+  }
+
+  // ── Acciones ───────────────────────────────────────────────────────────────
+  async function anadir() {
+    const cont = el('almacenAltaCuerpo'); if (!cont) return;
+    const d = leerCampos(cont); if (!d) return;
+    if (items.some(a => norm(a.nombre) === norm(d.nombre) && norm(a.ubicacion) === norm(d.ubicacion)) &&
+        !confirm('Ya existe «' + d.nombre + '» en esa ubicación. ¿Añadir otro igual?')) return;
+    d.actualizado = ahora(); d.por = quien();
+    try {
+      const r = realDb.ref(ruta()).push();
+      await r.set(d);
+      items.push(Object.assign({ id: r.key }, d));
+      ['nombre', 'cantidad', 'minimo', 'pedido', 'notas'].forEach(f => { const e = cont.querySelector('[data-f="' + f + '"]'); if (e) e.value = ''; });
+      const n = cont.querySelector('[data-f="nombre"]'); if (n) n.focus();
+      pintar();
+    } catch (e) { alert('No se pudo guardar: ' + e.message); }
+  }
+
+  async function ajustar(a, delta) {
+    try {
+      const estabaBajo = bajoMinimo(a);
+      const r = await realDb.ref(ruta() + '/' + a.id + '/cantidad').transaction(c => Math.max(0, (Number(c) || 0) + delta));
+      if (r.committed) {
+        a.cantidad = r.snapshot.val(); a.actualizado = ahora(); a.por = quien();
+        realDb.ref(ruta() + '/' + a.id).update({ actualizado: a.actualizado, por: a.por }).catch(() => {});
+        if (delta < 0 && !estabaBajo && bajoMinimo(a) && !abierta(a)) setTimeout(() => pedir(a, 'Queda poco de «' + a.nombre + '» (' + a.cantidad + ' ' + (a.unidad || 'ud') + ').\n'), 50);
+        refrescarFila(a);
+      }
+    } catch (e) { alert('No se pudo cambiar la cantidad: ' + e.message); }
+  }
+
+  async function guardar(a, fila) {
+    const d = leerCampos(fila); if (!d) return;
+    d.actualizado = ahora(); d.por = quien();
+    try { await realDb.ref(ruta() + '/' + a.id).update(d); Object.assign(a, d); abierto = null; pintar(); }
+    catch (e) { alert('No se pudo guardar: ' + e.message); }
+  }
+
+  async function borrar(a) {
+    if (!esAdmin()) return;
+    if (!confirm('¿Eliminar «' + a.nombre + '» del almacén? No se puede deshacer.')) return;
+    try { await realDb.ref(ruta() + '/' + a.id).remove(); items = items.filter(x => x.id !== a.id); abierto = null; pintar(); }
+    catch (e) { alert('No se pudo eliminar: ' + e.message); }
+  }
+
+  function msg(t, ok) {
+    const m = el('almacenMsg'); if (!m) return;
+    m.textContent = t; m.style.color = ok ? 'var(--green)' : 'var(--red)';
+    clearTimeout(msg._t); msg._t = setTimeout(() => { m.textContent = ''; }, 6000);
+  }
+
+  // Dato de compra: el administrador lo añade ya aceptado; el resto, como petición pendiente de aprobar
+  function datoCompra(a, cant) {
+    const adm = esAdmin(), now = ahora();
+    const d = {
+      nombre: String(a.nombre).slice(0, 80), cantidad: (cant + ' ' + (a.unidad || 'ud')).trim().slice(0, 30), urgente: Number(a.cantidad) <= 0,
+      autor: quien() || 'Usuario', uid: uidAct(), fecha: now, estado: adm ? 'aceptada' : 'solicitada', almacenId: a.id, origen: 'almacen'
+    };
+    if (adm) { d.resueltoPor = quien(); d.resueltoEn = now; }
+    return d;
+  }
+
+  async function pedir(a, intro) {
+    const c = compraDe(a);
+    if (c && (c.e === 'solicitada' || c.e === 'aceptada')) { msg('«' + a.nombre + '» ya está en compra.', false); return; }
+    if (c && c.e === 'comprada' && !confirm('«' + a.nombre + '» ya se compró el ' + fechaCorta(c.compradoEn) + '. ¿Pedir otra vez?')) return;
+    const r = prompt((intro || '') + 'Cantidad a pedir de «' + a.nombre + '» (' + (a.unidad || 'ud') + '):', String(sugerido(a)));
+    if (r === null) return;
+    const q = Number(String(r).replace(',', '.'));
+    if (!(q > 0)) { alert('Escribe una cantidad mayor que 0'); return; }
+    try {
+      const ref = realDb.ref('compra/' + INST() + '/compra').push();
+      const d = datoCompra(a, q);
+      await ref.set(d);
+      compras[ref.key] = d;
+      refrescarFila(a);
+      msg(esAdmin() ? '«' + a.nombre + '» añadido a la lista de la compra.' : 'Petición enviada: administración la revisará.', true);
+    } catch (e) { msg('No se pudo pedir: ' + e.message, false); }
+  }
+
+  async function recibir(a) {
+    const c = compraDe(a); if (!c || c.e !== 'comprada') return;
+    const r = prompt('Unidades recibidas de «' + a.nombre + '»:', String(cantNum(c)));
+    if (r === null) return;
+    const q = Number(String(r).replace(',', '.'));
+    if (!(q > 0)) { alert('Escribe una cantidad mayor que 0'); return; }
+    try {
+      const res = await realDb.ref(ruta() + '/' + a.id + '/cantidad').transaction(x => (Number(x) || 0) + q);
+      if (res.committed) {
+        a.cantidad = res.snapshot.val(); a.ultimaRecepcion = c.id; a.actualizado = ahora(); a.por = quien();
+        realDb.ref(ruta() + '/' + a.id).update({ ultimaRecepcion: c.id, actualizado: a.actualizado, por: a.por }).catch(() => {});
+        refrescarFila(a);
+        msg('+' + q + ' ' + (a.unidad || 'ud') + ' sumadas al stock de «' + a.nombre + '».', true);
+      }
+    } catch (e) { msg('No se pudo registrar la recepción: ' + e.message, false); }
+  }
+
+  async function pedirTodo() {
+    const l = filtrados().filter(a => bajoMinimo(a) && !abierta(a));
+    if (!l.length) { msg('No hay nada pendiente de pedir.', false); return; }
+    const yaComprados = l.filter(a => { const c = compraDe(a); return c && c.e === 'comprada'; }).length;
+    if (!confirm('Se añadirán ' + l.length + ' artículo(s) ' + (esAdmin() ? 'a la lista de la compra' : 'como peticiones para que administración las apruebe') + ', con las cantidades sugeridas.' +
+      (yaComprados ? '\n' + yaComprados + ' ya se compraron antes y siguen por debajo del mínimo.' : '') + '\n¿Continuar?')) return;
+    try {
+      const base = realDb.ref('compra/' + INST() + '/compra'), nuevas = {};
+      l.forEach(a => { nuevas[base.push().key] = datoCompra(a, sugerido(a)); });
+      await base.update(nuevas);
+      Object.assign(compras, nuevas);
+      pintar();
+      msg(l.length + ' artículo(s) ' + (esAdmin() ? 'añadidos a la lista de la compra.' : 'enviados a administración para su aprobación.'), true);
+    } catch (e) { msg('No se pudo pedir: ' + e.message, false); }
+  }
+
+  function codigoActual() { return subActual ? grupoActual + '-' + subActual : grupoActual; }
+
+  function anadirAqui() {
+    const det = el('almacenAlta'), cont = el('almacenAltaCuerpo'); if (!det || !cont) return;
+    det.open = true;
+    const u = cont.querySelector('[data-f="ubicacion"]'); if (u) u.value = codigoActual() || '';
+    const n = cont.querySelector('[data-f="nombre"]'); if (n) n.focus();
+    det.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  async function mover() {
+    const prefijo = codigoActual(); if (!prefijo || grupoActual === SIN) return;
+    const nuevo = normUbic(prompt('Nuevo código para «' + prefijo + '». Se aplicará a todos sus artículos:', prefijo) || '');
+    if (!nuevo || nuevo === prefijo) return;
+    const dentro = (u, p) => u === p || u.startsWith(p + '-');
+    const afectados = items.filter(a => dentro(normUbic(a.ubicacion), prefijo));
+    if (!afectados.length) return;
+    const cambios = afectados.map(a => ({ a, nu: nuevo + normUbic(a.ubicacion).slice(prefijo.length) }));
+    if (cambios.some(c => c.nu.length > 30)) { alert('El nuevo código es demasiado largo (máximo 30 caracteres con el contenedor).'); return; }
+    const existe = items.some(a => !afectados.includes(a) && dentro(normUbic(a.ubicacion), nuevo));
+    if (!confirm('Se cambiará la ubicación de ' + afectados.length + ' artículo(s): ' + prefijo + ' → ' + nuevo +
+      (existe ? '\nYa existe esa ubicación: los artículos se unirán a ella.' : '') + '\n¿Continuar?')) return;
+    const t = ahora(), upd = {};
+    cambios.forEach(c => { upd[c.a.id + '/ubicacion'] = c.nu; upd[c.a.id + '/actualizado'] = t; upd[c.a.id + '/por'] = quien(); });
+    try {
+      await realDb.ref(ruta()).update(upd);
+      cambios.forEach(c => { c.a.ubicacion = c.nu; c.a.actualizado = t; c.a.por = quien(); });
+      const p = nuevo.split('-'); grupoActual = p[0]; subActual = p.slice(1).join('-') || null; abierto = null;
+      pintar();
+    } catch (e) { alert('No se pudo cambiar la ubicación: ' + e.message); }
+  }
+
+  // ── CSV ────────────────────────────────────────────────────────────────────
+  function parseCSV(txt, sep) {
+    const filas = []; let fila = [], cel = '', q = false;
+    txt = txt.replace(/^\uFEFF/, '');
+    for (let i = 0; i < txt.length; i++) {
+      const c = txt[i];
+      if (q) { if (c === '"') { if (txt[i + 1] === '"') { cel += '"'; i++; } else q = false; } else cel += c; }
+      else if (c === '"') q = true;
+      else if (c === sep) { fila.push(cel); cel = ''; }
+      else if (c === '\n' || c === '\r') { if (c === '\r' && txt[i + 1] === '\n') i++; fila.push(cel); cel = ''; if (fila.some(x => x.trim())) filas.push(fila); fila = []; }
+      else cel += c;
+    }
+    fila.push(cel); if (fila.some(x => x.trim())) filas.push(fila);
+    return filas;
+  }
+
+  async function importarCSV() {
+    const f = el('almacenCsvInput') && el('almacenCsvInput').files[0];
+    if (!f) { alert('Selecciona un archivo CSV'); return; }
+    const txt = await f.text();
+    const primera = txt.split(/\r?\n/)[0] || '';
+    const filas = parseCSV(txt, primera.split(';').length >= primera.split(',').length ? ';' : ',');
+    if (filas.length && /^nombre$/i.test((filas[0][0] || '').trim())) filas.shift();
+    const nuevos = [];
+    filas.forEach(c => {
+      const nombre = (c[0] || '').trim(); if (!nombre) return;
+      const cantidad = Number(String(c[2] || '0').replace(',', '.')), minimo = Number(String(c[3] || '0').replace(',', '.'));
+      nuevos.push({
+        nombre: nombre.slice(0, 80), categoria: /^lab/i.test((c[1] || '').trim()) ? 'laboratorio' : /^pint/i.test((c[1] || '').trim()) ? 'pintura' : /^limp/i.test((c[1] || '').trim()) ? 'limpieza' : /^(tall|cons)/i.test((c[1] || '').trim()) ? 'taller' : /^otro/i.test((c[1] || '').trim()) ? 'otro' : 'recambio',
+        pedido: Math.max(0, Number(String(c[7] || '0').replace(',', '.')) || 0),
+        cantidad: cantidad >= 0 ? cantidad : 0, minimo: minimo >= 0 ? minimo : 0, unidad: ((c[4] || '').trim() || 'ud').slice(0, 12),
+        ubicacion: normUbic(c[5]).slice(0, 30), notas: (c[6] || '').trim().slice(0, 200), actualizado: ahora(), por: quien()
+      });
+    });
+    if (!nuevos.length) { alert('No se encontraron artículos en el archivo.'); return; }
+    if (nuevos.length > 1000) { alert('El archivo tiene ' + nuevos.length + ' filas; el máximo por importación es 1000.'); return; }
+    if (!confirm('Se van a AÑADIR ' + nuevos.length + ' artículos (los existentes no se modifican). ¿Continuar?')) return;
+    try {
+      const upd = {}; nuevos.forEach(n => { upd[realDb.ref(ruta()).push().key] = n; });
+      await realDb.ref(ruta()).update(upd);
+      el('almacenCsvInput').value = '';
+      await cargar(true);
+      alert('Importados ' + nuevos.length + ' artículos.');
+    } catch (e) { alert('No se pudo importar: ' + e.message); }
+  }
+
+  function exportarCSV() {
+    const seguro = v => { let s = String(v == null ? '' : v); if (/^[=+\-@]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };
+    const cab = ['nombre', 'familia', 'cantidad', 'minimo', 'unidad', 'ubicacion', 'notas', 'pedido'];
+    const lineas = [cab.join(';')].concat(items.slice().sort(cmpNombre).map(a => [a.nombre, a.categoria, a.cantidad, a.minimo, a.unidad, a.ubicacion, a.notas, a.pedido || ''].map(seguro).join(';')));
+    const blob = new Blob(['\uFEFF' + lineas.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = 'almacen_' + INST() + '_' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // ── Eventos ────────────────────────────────────────────────────────────────
+  function iniciar() {
+    const lista = el('almacenLista');
+    if (!lista || lista.dataset.listo) return;
+    lista.dataset.listo = '1';
+    el('almacenBuscador').addEventListener('input', e => { filtro.texto = e.target.value; filtro.limite = PAGINA; pintarLista(); });
+    el('almacenFamilia').addEventListener('change', e => { filtro.fam = e.target.value; filtro.limite = PAGINA; pintar(); });
+    el('almacenOrden').addEventListener('change', e => { filtro.orden = e.target.value; filtro.limite = PAGINA; pintarLista(); });
+    el('almacenChips').addEventListener('click', e => { const b = e.target.closest('.alm-chip'); if (!b) return; filtro.cat = b.dataset.cat; filtro.limite = PAGINA; abierto = null; if (filtro.cat === 'ubic') { grupoActual = null; subActual = null; } pintar(); });
+    el('almacenBtnRefrescar').addEventListener('click', () => cargar(true));
+    el('almacenBtnAnadir').addEventListener('click', anadir);
+    el('almacenBtnImportar').addEventListener('click', importarCSV);
+    el('almacenBtnExportar').addEventListener('click', exportarCSV);
+    lista.addEventListener('click', e => {
+      const g = e.target.closest('.alm-grupo');
+      if (g) { if (g.dataset.s !== undefined) subActual = g.dataset.s; else { grupoActual = g.dataset.g; subActual = null; } filtro.limite = PAGINA; pintarLista(); return; }
+      const b = e.target.closest('[data-accion]'); if (!b) return;
+      if (b.dataset.accion === 'volver') { if (subActual) subActual = null; else grupoActual = null; abierto = null; pintarLista(); return; }
+      if (b.dataset.accion === 'pedir-todo') { pedirTodo(); return; }
+      if (b.dataset.accion === 'anadir-aqui') { anadirAqui(); return; }
+      if (b.dataset.accion === 'mover') { mover(); return; }
+      if (b.dataset.accion === 'mas-resultados') { filtro.limite += PAGINA; pintarLista(); return; }
+      const fila = b.closest('.alm-item'); if (!fila) return;
+      const a = items.find(x => x.id === fila.dataset.id); if (!a) return;
+      switch (b.dataset.accion) {
+        case 'abrir': abierto = abierto === a.id ? null : a.id; pintarLista(); break;
+        case 'cerrar': abierto = null; pintarLista(); break;
+        case 'mas': ajustar(a, 1); break;
+        case 'menos': ajustar(a, -1); break;
+        case 'guardar': guardar(a, fila); break;
+        case 'borrar': borrar(a); break;
+        case 'pedir': pedir(a); break;
+        case 'recibir': recibir(a); break;
+      }
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
+})();
+
+/* =============================================================================
+   COMPRA: «ELEGIR DEL ALMACÉN O DE LOS RECAMBIOS» — desplegable con buscador (añadir al final de app.js)
+   Rellena producto y cantidad del formulario de Compra y deja enlazada la petición con el
+   artículo (almacenId) o con el equipo, para no duplicar pedidos y saber de dónde viene.
+============================================================================= */
+(function () {
+  const CSS = `
+#compraScreen .cp-elegir{margin:0 0 10px}#compraScreen .cp-elegir .button{width:100%;max-width:none}
+.cpk-overlay{position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.7);display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto}
+.cpk-dialog{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);padding:16px;max-width:560px;width:100%;margin-top:4vh}
+.cpk-dialog h3{margin:0 0 10px}
+.cpk-dialog input[type=search]{width:100%;box-sizing:border-box;min-height:44px;margin:0 0 10px}
+.cpk-chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px}
+.cpk-chip{min-height:40px;padding:8px 14px;border:1px solid var(--border);border-radius:999px;background:var(--bg-card);color:var(--text-secondary);font:inherit;font-size:.9rem;cursor:pointer}
+.cpk-chip.on{background:var(--blue-dim);border-color:var(--blue);color:var(--text-primary)}
+.cpk-lista{max-height:52vh;overflow:auto;margin:0 0 12px}
+.cpk-item{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;margin:0 0 8px;padding:10px 12px;text-align:left;background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;color:var(--text-primary);font:inherit;cursor:pointer}
+.cpk-item:hover:not(:disabled){background:var(--bg-hover)}
+.cpk-item:disabled{opacity:.55;cursor:default}
+.cpk-item small{color:var(--text-secondary)}
+.cpk-item.cpk-bajo{border-color:var(--red)}
+.cpk-item .cpk-rojo{color:var(--red)}
+.cpk-item .cpk-verde{color:var(--green)}
+.cpk-vacio{margin:10px 0;text-align:center;color:var(--text-secondary)}`;
+  const MAX = 40;
+  const el = id => document.getElementById(id);
+  const norm = s => String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const FUENTES = [['todo', 'Todo'], ['alm', 'Almacén'], ['eq', 'Recambios de equipos'], ['bajo', 'Por reponer']];
+  let datos = [];
+  const filtro = { texto: '', fuente: 'todo' };
+
+  // Reúne artículos del almacén y recambios de equipos (los equipos que comparten recambios no se repiten)
+  async function reunir() {
+    const out = [];
+    try {
+      const d = await window.almacenDatos();
+      d.items.forEach(a => out.push({
+        tipo: 'alm', id: a.id, nombre: a.nombre, unidad: a.unidad || 'ud', stock: Number(a.cantidad) || 0, minimo: Number(a.minimo) || 0,
+        linea: [d.fam[a.categoria], a.ubicacion ? '📍 ' + a.ubicacion : ''].filter(Boolean).join(' · '), bajo: d.bajo(a), sugerido: d.sugerido(a)
+      }));
+    } catch (e) { console.warn('Compra: no se pudo leer el almacén', e); }
+    const eqs = (window.equiposDb && window.equiposDb.equiposGuardados) || [];
+    eqs.forEach(eq => {
+      if (!eq || eq.recambiosDe) return;
+      const comparten = eqs.filter(e => e && e.recambiosDe === eq.equipo).length;
+      (eq.recambios || []).forEach(r => {
+        if (!r || !r.nombre) return;
+        const stock = Number(r.cantidad) || 0;
+        out.push({
+          tipo: 'eq', equipo: eq.equipo, nombre: (r.nombre + ' · ' + eq.equipo).slice(0, 80), unidad: 'ud', stock, minimo: Number(r.minimo) || 0,
+          bajo: Number(r.minimo) > 0 ? stock <= Number(r.minimo) : stock <= 0, sugerido: Number(r.minimo) > 0 ? Math.max(1, Math.ceil(Number(r.minimo) * 2 - stock)) : 1,
+          linea: 'Recambio de ' + eq.equipo + (eq.modelo ? ' (' + eq.modelo + ')' : '') + (comparten ? ' · compartido con ' + comparten + ' equipo(s)' : '')
+        });
+      });
+    });
+    return out;
+  }
+
+  const abiertas = () => Object.values((window._cpItems && window._cpItems()) || {})
+    .filter(x => x && ['solicitada', 'aceptada'].includes(x.estado || (x.comprado ? 'comprada' : 'aceptada')));
+  const yaPedido = (d, lista) => lista.some(x => (d.tipo === 'alm' && x.almacenId === d.id) || norm(x.nombre) === norm(d.nombre));
+
+  function filtrados() {
+    const palabras = norm(filtro.texto).trim().split(/\s+/).filter(Boolean);
+    return datos.filter(d => {
+      if (filtro.fuente === 'alm' && d.tipo !== 'alm') return false;
+      if (filtro.fuente === 'eq' && d.tipo !== 'eq') return false;
+      if (filtro.fuente === 'bajo' && !d.bajo) return false;
+      if (!palabras.length) return true;
+      const pajar = norm(d.nombre + ' ' + d.linea);
+      return palabras.every(p => pajar.includes(p));
+    }).sort((a, b) => (b.bajo ? 1 : 0) - (a.bajo ? 1 : 0) || norm(a.nombre).localeCompare(norm(b.nombre), undefined, { numeric: true }));
+  }
+
+  function pintar() {
+    const cont = el('cpkLista'); if (!cont) return;
+    const chips = el('cpkChips');
+    if (chips) chips.innerHTML = FUENTES.map(f => '<button type="button" class="cpk-chip' + (filtro.fuente === f[0] ? ' on' : '') + '" data-f="' + f[0] + '">' + f[1] + '</button>').join('');
+    const l = filtrados(), lista = abiertas();
+    if (!l.length) { cont.innerHTML = '<p class="cpk-vacio">' + (datos.length ? 'Sin resultados. Puedes escribir el producto a mano en el formulario.' : 'No hay artículos que mostrar todavía.') + '</p>'; return; }
+    cont.innerHTML = l.slice(0, MAX).map(d => {
+      const ya = yaPedido(d, lista), i = datos.indexOf(d);
+      return '<button type="button" class="cpk-item' + (d.bajo ? ' cpk-bajo' : '') + '" data-i="' + i + '"' + (ya ? ' disabled' : '') + '><strong>' + _h(d.nombre) + '</strong>' +
+        '<small>' + _h(d.linea) + '</small>' +
+        '<small>Stock: ' + _h(d.stock) + ' ' + _h(d.unidad) + (d.minimo ? ' · mínimo ' + _h(d.minimo) : '') +
+        (d.bajo ? ' · <span class="cpk-rojo">' + (d.stock <= 0 ? 'agotado' : 'por reponer') + '</span>' : '') +
+        (ya ? ' · <span class="cpk-verde">✓ ya está en la lista</span>' : '') + '</small></button>';
+    }).join('') + (l.length > MAX ? '<p class="cpk-vacio">Mostrando ' + MAX + ' de ' + l.length + '. Afina la búsqueda.</p>' : '');
+  }
+
+  function cerrar() { const o = el('cpkOverlay'); if (o) o.remove(); document.removeEventListener('keydown', teclas); }
+  function teclas(e) { if (e.key === 'Escape') cerrar(); }
+
+  function elegir(d) {
+    const nom = el('cpNombre'), can = el('cpCant'), urg = el('cpUrg');
+    if (!nom || !can) { cerrar(); return; }
+    nom.value = d.nombre.slice(0, 80);
+    can.value = (d.sugerido + ' ' + d.unidad).trim().slice(0, 30);
+    if (urg) urg.checked = d.stock <= 0;
+    window._cpVinculo = { nombre: nom.value.trim(), datos: d.tipo === 'alm' ? { almacenId: d.id, origen: 'almacen' } : { origen: 'recambio-equipo', equipo: d.equipo } };
+    cerrar();
+    const m = el('cpMsg');
+    if (m) { m.textContent = 'Revisa la cantidad y pulsa «Pedir».'; m.style.color = 'var(--green)'; clearTimeout(elegir._t); elegir._t = setTimeout(() => { m.textContent = ''; }, 6000); }
+    can.focus(); if (can.select) can.select();
+  }
+
+  async function abrir() {
+    cerrar();
+    if (!el('cpkStyles')) { const st = document.createElement('style'); st.id = 'cpkStyles'; st.textContent = CSS; document.head.appendChild(st); }
+    filtro.texto = ''; filtro.fuente = 'todo';
+    const ov = document.createElement('div'); ov.className = 'cpk-overlay'; ov.id = 'cpkOverlay';
+    ov.innerHTML = '<div class="cpk-dialog"><h3>Elegir artículo</h3>' +
+      '<input type="search" id="cpkBuscar" placeholder="🔍 Buscar por nombre, ubicación o equipo…" autocomplete="off">' +
+      '<div class="cpk-chips" id="cpkChips"></div><div class="cpk-lista" id="cpkLista"><p class="cpk-vacio">Cargando…</p></div>' +
+      '<button type="button" class="button back-button" id="cpkCerrar">Cerrar</button></div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', e => { if (e.target === ov) cerrar(); });
+    el('cpkCerrar').addEventListener('click', cerrar);
+    el('cpkBuscar').addEventListener('input', e => { filtro.texto = e.target.value; pintar(); });
+    el('cpkChips').addEventListener('click', e => { const b = e.target.closest('.cpk-chip'); if (b) { filtro.fuente = b.dataset.f; pintar(); } });
+    el('cpkLista').addEventListener('click', e => { const b = e.target.closest('.cpk-item'); if (b && !b.disabled && datos[Number(b.dataset.i)]) elegir(datos[Number(b.dataset.i)]); });
+    document.addEventListener('keydown', teclas);
+    el('cpkBuscar').focus();
+    datos = await reunir();
+    pintar();
+  }
+
+  window.cpElegirAlmacen = abrir;
+})();
+
+/* =============================================================================
+   ALMACÉN: RECAMBIOS DE EQUIPOS (panel dentro de la pantalla Almacén) — añadir al final de app.js
+   Enseña los recambios de cada equipo con su stock, ubicación y mínimo. Se busca con el mismo
+   buscador del almacén. Los datos siguen guardándose en el equipo (nodo stock); aquí solo se
+   añaden dos campos opcionales a cada recambio: ubicacion y minimo.
+============================================================================= */
+(function () {
+  const el = id => document.getElementById(id);
+  const norm = s => String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const normUbic = u => String(u || '').toUpperCase().replace(/[\/:·]/g, '-').replace(/\s*-\s*/g, '-').replace(/\s+/g, ' ').replace(/^-+|-+$/g, '').trim();
+  const esAdmin = () => localStorage.getItem('usuarioRol') === 'admin';
+  const PAGINA = 30;
+  let limite = PAGINA, buscaba = false;
+  // Por reponer: si tiene mínimo, cuando llega a él; si no, cuando se agota
+  const bajo = r => Number(r.minimo) > 0 ? Number(r.cantidad) <= Number(r.minimo) : Number(r.cantidad) <= 0;
+  const buscador = () => el('almacenBuscador');
+
+  // Recambios de los equipos que no comparten (los que comparten se editan desde su equipo principal)
+  function filas() {
+    const out = [], eqs = (window.equiposDb && window.equiposDb.equiposGuardados) || [];
+    eqs.forEach((eq, i) => {
+      if (!eq || eq.recambiosDe) return;
+      (eq.recambios || []).forEach((r, j) => { if (r && r.nombre) out.push({ eq, i, r, j }); });
+    });
+    return out;
+  }
+  function visibles() {
+    const q = norm(buscador() ? buscador().value : '').trim().split(/\s+/).filter(Boolean);
+    return filas().filter(x => {
+      const p = norm([x.r.nombre, x.r.ubicacion, x.eq.equipo, x.eq.modelo, x.eq.familia, x.eq.zona].join(' '));
+      return q.every(w => p.includes(w));
+    });
+  }
+
+  function htmlFila(x) {
+    const { eq, i, r, j } = x, b = bajo(r), adm = esAdmin();
+    return '<div class="alm-item' + (b ? ' alm-bajo' : '') + '" data-i="' + i + '" data-j="' + j + '"><div class="alm-fila">' +
+      '<div class="alm-info"><strong>' + _h(r.nombre) + '</strong><small>' + _h(eq.equipo) + (eq.modelo ? ' (' + _h(eq.modelo) + ')' : '') + ' · ' + _h(eq.familia || '') + ' › ' + _h(eq.zona || '') + '</small></div>' +
+      (r.ubicacion ? '<span class="alm-ubic">📍 ' + _h(r.ubicacion) + '</span>' : '<span class="alm-ubic alm-sin">Sin ubicación</span>') +
+      '<div class="alm-cant"><span class="alm-num">' + _h(r.cantidad) + '<small>ud' + (Number(r.minimo) > 0 ? ' · mín. ' + _h(r.minimo) : '') + '</small></span></div></div>' +
+      '<div class="alm-nav" style="padding:0 12px 10px">' +
+        (adm ? '<button type="button" class="alm-volver" data-a="ub">📍 Ubicación</button><button type="button" class="alm-volver" data-a="min">Mínimo</button>' : '') +
+        (b ? '<button type="button" class="alm-volver" data-a="pedir">🛒 Pedir</button>' : '') +
+        (adm ? '<button type="button" class="alm-volver" data-a="ver">Ver equipo</button>' : '') + '</div></div>';
+  }
+
+  function pintar() {
+    const cont = el('almacenEquiposLista'), tit = el('almacenEquiposTitulo'); if (!cont || !tit) return;
+    const l = visibles(), nb = l.filter(x => bajo(x.r)).length;
+    tit.textContent = 'Recambios de equipos (' + l.length + (nb ? ' · ' + nb + ' por reponer' : '') + ')';
+    cont.innerHTML = l.length
+      ? l.slice(0, limite).map(htmlFila).join('') + (l.length > limite ? '<button type="button" class="button alm-mas" data-a="mas">Mostrar más (' + (l.length - limite) + ' restantes)</button>' : '')
+      : '<p class="alm-vacio">Ningún recambio de equipo' + (buscador() && buscador().value.trim() ? ' coincide con la búsqueda' : ' todavía') + '.</p>';
+  }
+
+  function msg(t, ok) {
+    const m = el('almacenMsg'); if (!m) return;
+    m.textContent = t; m.style.color = ok ? 'var(--green)' : 'var(--red)';
+    clearTimeout(msg._t); msg._t = setTimeout(() => { m.textContent = ''; }, 6000);
+  }
+  const guardar = async () => { await realDb.ref('instalaciones/' + INST() + '/stock').set(window.equiposDb.equiposGuardados); guardarEquiposDb(); };
+
+  async function accion(a, x) {
+    const { eq, i, r } = x;
+    try {
+      if (a === 'ub') {
+        const v = prompt('Ubicación en almacén de «' + r.nombre + '» (L3 o L3-C5; vacío = quitar):', r.ubicacion || '');
+        if (v === null) return;
+        const u = normUbic(v).slice(0, 30); if (u) r.ubicacion = u; else delete r.ubicacion;
+        await guardar(); pintar();
+      } else if (a === 'min') {
+        const v = prompt('Mínimo de «' + r.nombre + '» (aviso de reposición; 0 = sin mínimo):', r.minimo || 0);
+        if (v === null) return;
+        const m = Number(String(v).replace(',', '.'));
+        if (!(m >= 0)) { alert('Escribe un número igual o mayor que 0'); return; }
+        if (m > 0) r.minimo = m; else delete r.minimo;
+        await guardar(); pintar();
+      } else if (a === 'ver') {
+        window._equiposNavIr('equipo', eq.familia || '(Sin familia)', eq.zona || '(Sin zona)'); showScreen('equiposScreen');
+        setTimeout(() => {
+          const f = document.querySelector('#listaEquiposGuardados .equipo-record[data-equipo-index="' + i + '"]');
+          if (!f) return; const d = f.querySelector('.eq-detail'); if (d) d.classList.add('eq-detail-open'); f.scrollIntoView({ block: 'start' });
+        }, 120);
+      } else if (a === 'pedir') {
+        const nombre = (r.nombre + ' · ' + eq.equipo).slice(0, 80);
+        const sug = Number(r.minimo) > 0 ? Math.max(1, Math.ceil(Number(r.minimo) * 2 - Number(r.cantidad || 0))) : 1;
+        const q = prompt('Cantidad a pedir de «' + nombre + '»:', String(sug));
+        if (q === null) return;
+        const n = Number(String(q).replace(',', '.'));
+        if (!(n > 0)) { alert('Escribe una cantidad mayor que 0'); return; }
+        const sc = await realDb.ref('compra/' + INST() + '/compra').once('value');
+        if (Object.values(sc.val() || {}).some(c => c && norm(c.nombre) === norm(nombre) && ['solicitada', 'aceptada'].includes(c.estado || 'aceptada'))) { msg('«' + nombre + '» ya está en la lista de la compra.', false); return; }
+        const adm = esAdmin(), now = new Date().toISOString(), quien = localStorage.getItem('usuarioNombre') || 'Usuario';
+        const d = { nombre, cantidad: String(n).slice(0, 30), urgente: Number(r.cantidad) <= 0, autor: quien,
+          uid: (typeof auth !== 'undefined' && auth.currentUser && auth.currentUser.uid) || localStorage.getItem('usuarioUid') || '',
+          fecha: now, estado: adm ? 'aceptada' : 'solicitada', origen: 'recambio-equipo', equipo: eq.equipo };
+        if (adm) { d.resueltoPor = quien; d.resueltoEn = now; }
+        await realDb.ref('compra/' + INST() + '/compra').push(d);
+        msg(adm ? '«' + nombre + '» añadido a la lista de la compra.' : 'Petición enviada: administración la revisará.', true);
+      }
+    } catch (e) { msg('No se pudo completar: ' + e.message, false); }
+  }
+
+  function iniciar() {
+    const cont = el('almacenEquiposLista');
+    if (!cont || cont.dataset.listo) return;
+    cont.dataset.listo = '1';
+    cont.addEventListener('click', e => {
+      const b = e.target.closest('[data-a]'); if (!b) return;
+      if (b.dataset.a === 'mas') { limite += PAGINA; pintar(); return; }
+      const f = b.closest('.alm-item'); if (!f) return;
+      const x = filas().find(y => y.i === Number(f.dataset.i) && y.j === Number(f.dataset.j));
+      if (x) accion(b.dataset.a, x);
+    });
+    if (buscador()) buscador().addEventListener('input', () => {
+      limite = PAGINA; pintar();
+      const hay = buscador().value.trim() !== '';
+      if (hay && !buscaba && visibles().length) el('almacenEquipos').open = true;   // se abre al empezar a buscar
+      buscaba = hay;
+    });
+    const antes = window.almacenAlEntrar;
+    window.almacenAlEntrar = function () { if (antes) antes.apply(this, arguments); limite = PAGINA; pintar(); };
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
 })();

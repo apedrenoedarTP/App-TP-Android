@@ -141,6 +141,7 @@
     </div>
 
     <p class="menu-grupo menu-grupo-gestion">Gestión</p>
+    <button class="button back-button" id="menuAlmacenBtn" onclick="showScreen('almacenScreen')">📦 Almacén</button>
     <button class="button back-button" id="menuCentroOperativoBtn" onclick="showScreen('centroOperativoScreen');renderCentroOperativo()">🖥️ Centro Operativo</button>
     <button class="button back-button" id="menuAdminBtn" style="display:none">⚙️ Administración</button>
     <button class="button back-button" onclick="volverAInstalaciones()">← Atrás</button>
@@ -727,6 +728,115 @@
     </div>
 
     <button class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>
+  </div>
+
+  <!-- ════════════════════════════════════
+       ALMACÉN
+  ════════════════════════════════════ -->
+  <div class="screen" id="almacenScreen">
+    <h1 class="title">Almacén</h1>
+    <p class="title-sub">Recambios y consumibles</p>
+
+    <details class="form-container plegable" id="almacenAlta">
+      <summary>+ Añadir artículo</summary>
+      <div class="plegable-cuerpo form-grid" id="almacenAltaCuerpo">
+        <div class="form-group span-2">
+          <label>Nombre</label>
+          <input type="text" data-f="nombre" maxlength="80" placeholder="Ej: Rodamiento 6205-2RS">
+        </div>
+        <div class="form-group">
+          <label>Familia</label>
+          <select data-f="categoria">
+            <option value="recambio">Recambio</option>
+            <option value="taller">Taller (aceites, grasas, limpiadores…)</option>
+            <option value="laboratorio">Laboratorio</option>
+            <option value="pintura">Pinturas</option>
+            <option value="limpieza">Limpieza</option>
+            <option value="otro">Otros</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Unidad</label>
+          <input type="text" data-f="unidad" maxlength="12" list="almacen-unidades" placeholder="ud">
+        </div>
+        <div class="form-group">
+          <label>Cantidad</label>
+          <input type="number" data-f="cantidad" min="0" step="any" placeholder="0">
+        </div>
+        <div class="form-group">
+          <label>Mínimo (aviso)</label>
+          <input type="number" data-f="minimo" min="0" step="any" placeholder="0">
+        </div>
+        <div class="form-group">
+          <label>Cantidad a pedir</label>
+          <input type="number" data-f="pedido" min="0" step="any" placeholder="Vacío = 2× mínimo">
+        </div>
+        <div class="form-group">
+          <label>Ubicación (leja o leja-contenedor)</label>
+          <input type="text" data-f="ubicacion" maxlength="30" list="almacen-ubicaciones" placeholder="L3 o L3-C5">
+        </div>
+        <div class="form-group span-2">
+          <label>Notas</label>
+          <input type="text" data-f="notas" maxlength="200" placeholder="Opcional">
+        </div>
+        <button type="button" class="button save-button span-2" id="almacenBtnAnadir">+ Guardar artículo</button>
+      </div>
+    </details>
+
+    <details class="form-container plegable">
+      <summary>Importar y exportar (CSV)</summary>
+      <div class="plegable-cuerpo form-grid">
+        <div>
+          <div class="form-group">
+            <label>Importar CSV (añade los artículos del archivo)</label>
+            <input type="file" id="almacenCsvInput" accept=".csv,.txt">
+          </div>
+          <button type="button" class="button" id="almacenBtnImportar">↑ Importar CSV</button>
+        </div>
+        <div>
+          <p class="alm-estado">Columnas: nombre; familia (recambio, taller, laboratorio, pintura, limpieza, otro); cantidad; mínimo; unidad; ubicación; notas; cantidad a pedir</p>
+          <button type="button" class="button" id="almacenBtnExportar">↓ Exportar almacén</button>
+        </div>
+      </div>
+    </details>
+
+    <div class="form-container">
+      <div class="form-group buscador-lista">
+        <input type="search" id="almacenBuscador" placeholder="🔍 Buscar por nombre, ubicación o notas…" autocomplete="off">
+      </div>
+      <div class="alm-barra">
+        <div class="alm-chips" id="almacenChips"></div>
+        <div class="form-group alm-orden">
+          <select id="almacenFamilia" aria-label="Familia">
+            <option value="">Todas las familias</option>
+            <option value="recambio">Recambios</option>
+            <option value="taller">Taller</option>
+            <option value="laboratorio">Laboratorio</option>
+            <option value="pintura">Pinturas</option>
+            <option value="limpieza">Limpieza</option>
+            <option value="otro">Otros</option>
+          </select>
+        </div>
+        <div class="form-group alm-orden">
+          <select id="almacenOrden" aria-label="Ordenar">
+            <option value="nombre">Ordenar: nombre</option>
+            <option value="ubicacion">Ordenar: ubicación</option>
+            <option value="cantidad">Ordenar: menos stock</option>
+          </select>
+        </div>
+      </div>
+      <p class="alm-estado"><span id="almacenEstado"></span><button type="button" class="alm-enlace" id="almacenBtnRefrescar">↻ Actualizar</button></p>
+      <p class="alm-msg" id="almacenMsg"></p>
+      <details class="plegable" id="almacenEquipos" style="margin-bottom:12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-card)">
+        <summary id="almacenEquiposTitulo">Recambios de equipos</summary>
+        <div class="plegable-cuerpo" id="almacenEquiposLista"></div>
+      </details>
+      <div id="almacenLista"></div>
+    </div>
+
+    <button class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>
+    <datalist id="almacen-unidades"><option value="ud"><option value="l"><option value="kg"><option value="m"><option value="caja"><option value="bote"><option value="rollo"><option value="par"></datalist>
+    <datalist id="almacen-ubicaciones"></datalist>
   </div>
 
   <!-- ════════════════════════════════════

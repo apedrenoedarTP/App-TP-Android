@@ -1673,3 +1673,90 @@ details.plegable > .plegable-cuerpo { padding: 18px 18px 6px; }
 
 /* «Volver» centrado en todas las pantallas salvo el menú (que tiene su propio pie) */
 .screen:not(#menuScreen) > .back-button { margin-left: auto; margin-right: auto; }
+
+/* ===== ALMACÉN + orden del menú con el nuevo botón (pegar al final de styles.css) ===== */
+
+/* Menú: «Almacén» entra al principio de Gestión; el resto se desplaza una posición */
+#menuAlmacenBtn          { order: 6; }
+#menuCuadranteBtn        { order: 7; }
+#menuCambiosTurnoBtn     { order: 8; }
+#menuCompraBtn           { order: 9; }
+#menuCompraUnificadaBtn  { order: 10; }
+#menuCentroOperativoBtn  { order: 11; }
+#menuAdminBtn            { order: 12; }
+
+/* Pantalla */
+#almacenScreen { max-width: 960px; }
+.alm-barra { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.alm-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.alm-chip { min-height: 40px; padding: 8px 14px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-card); color: var(--text-secondary); font: inherit; font-size: .9rem; cursor: pointer; }
+.alm-chip.alm-chip-on { background: var(--blue-dim); border-color: var(--blue); color: var(--text-primary); }
+.alm-orden { margin: 0; min-width: 190px; }
+.alm-orden select { min-height: 40px; padding: 6px 10px; }
+.alm-estado { margin: 0 0 10px; font-size: .88rem; color: var(--text-secondary); }
+.alm-enlace { margin-left: 8px; padding: 4px 6px; background: none; border: 0; color: var(--text-primary); font: inherit; text-decoration: underline; cursor: pointer; }
+.alm-vacio { margin: 14px 0; text-align: center; color: var(--text-secondary); }
+
+.alm-item { margin-bottom: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); }
+.alm-item.alm-bajo { border-color: var(--red); background: rgba(231,76,60,.10); }
+.alm-fila { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 12px; }
+.alm-info { display: flex; flex-direction: column; flex: 1 1 220px; gap: 2px; min-width: 0; cursor: pointer; }
+.alm-info strong { overflow-wrap: anywhere; }
+.alm-info small { color: var(--text-secondary); }
+.alm-ubic { padding: 4px 10px; border-radius: 999px; background: var(--blue-dim); font-family: var(--font-mono); font-size: .82rem; white-space: nowrap; }
+.alm-ubic.alm-sin { background: transparent; border: 1px dashed var(--border-light); color: var(--text-muted); }
+.alm-cant { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.alm-btn { width: 44px; height: 44px; border: 1px solid var(--border-light); border-radius: 10px; background: var(--bg-surface); color: var(--text-primary); font-size: 1.4rem; line-height: 1; cursor: pointer; }
+.alm-btn:hover { background: var(--bg-hover); }
+.alm-num { min-width: 56px; text-align: center; font-family: var(--font-display); font-size: 1.3rem; font-weight: 700; }
+.alm-num small { display: block; font-family: var(--font-mono); font-size: .7rem; font-weight: 400; color: var(--text-secondary); }
+.alm-bajo .alm-num { color: var(--red); }
+.alm-edicion { padding: 14px 14px 0; border-top: 1px solid var(--border); }
+.alm-meta { margin: 0 0 12px; font-size: .8rem; color: var(--text-muted); }
+
+@media (max-width: 640px) {
+  .alm-cant { width: 100%; margin-left: 0; justify-content: space-between; }
+  .alm-orden { width: 100%; }
+}
+
+/* ===== ALMACÉN: vista por ubicaciones y «mostrar más» (pegar al final de styles.css, después de almacen.css) ===== */
+.alm-grupos { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.alm-grupo {
+  display: flex; flex-direction: column; justify-content: center; gap: 4px; min-height: 88px; padding: 14px 16px;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--bg-card);
+  color: var(--text-primary); font: inherit; text-align: left; cursor: pointer;
+}
+.alm-grupo:hover { background: var(--bg-hover); border-color: var(--border-light); }
+.alm-grupo strong { font-family: var(--font-display); font-size: 1.35rem; letter-spacing: .03em; overflow-wrap: anywhere; }
+.alm-grupo span { font-size: .88rem; color: var(--text-secondary); }
+.alm-grupo em { font-size: .85rem; font-style: normal; color: var(--red); }
+.alm-grupo.alm-grupo-alerta { border-color: var(--red); }
+
+.alm-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 10px; }
+.alm-nav strong { font-family: var(--font-display); font-size: 1.25rem; letter-spacing: .03em; }
+.alm-nav span { margin-left: auto; font-size: .88rem; color: var(--text-secondary); }
+.alm-volver { min-height: 40px; padding: 8px 14px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-card); color: var(--text-primary); font: inherit; cursor: pointer; }
+.alm-volver:hover { background: var(--bg-hover); }
+.alm-mas { margin: 12px auto 0; }
+
+/* ===== ALMACÉN: leja y contenedor (añadir al final de almacen_vistas.css / styles.css) ===== */
+.alm-sec { margin: 16px 0 8px; font-family: var(--font-display); font-size: 1rem; letter-spacing: .04em; color: var(--text-secondary); }
+.alm-nav .alm-accion { margin-left: 0; }
+.alm-nav span { margin-left: auto; }
+
+/* ===== ALMACÉN ↔ COMPRA: estado «en compra», botón Pedir y «Por reponer» (añadir al final de styles.css, después de almacen_vistas.css) ===== */
+.alm-compra { display: block; margin-top: 4px; color: #e3b341; }
+.alm-compra.alm-compra-ok { color: var(--green); }
+.alm-pedir {
+  align-self: flex-start; min-height: 40px; margin-top: 6px; padding: 8px 14px;
+  border: 1px solid var(--red); border-radius: 999px; background: rgba(231,76,60,.12);
+  color: var(--text-primary); font: inherit; font-size: .9rem; cursor: pointer;
+}
+.alm-pedir:hover { background: rgba(231,76,60,.25); }
+.alm-chip.alm-chip-alerta { border-color: var(--red); }
+.alm-barra-rep { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.alm-barra-rep span { font-size: .95rem; color: var(--text-secondary); }
+.alm-pedir-todo { width: auto; max-width: none; }
+.alm-msg { min-height: 20px; margin: 0 0 8px; font-size: .9rem; }
+.alm-recibir { border-color: var(--green); background: rgba(46,160,67,.12); }
+.alm-recibir:hover { background: rgba(46,160,67,.25); }
