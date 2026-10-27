@@ -1760,3 +1760,12 @@ details.plegable > .plegable-cuerpo { padding: 18px 18px 6px; }
 .alm-msg { min-height: 20px; margin: 0 0 8px; font-size: .9rem; }
 .alm-recibir { border-color: var(--green); background: rgba(46,160,67,.12); }
 .alm-recibir:hover { background: rgba(46,160,67,.25); }
+
+/* ===== ALMACÉN: modo solo stock (usuarios sin permiso de gestión) ===== */
+body.sin-gestion-almacen #almacenAlta,
+body.sin-gestion-almacen #almacenImportBloque,
+body.sin-gestion-almacen .alm-accion,
+body.sin-gestion-almacen .alm-edicion [data-accion="guardar"],
+body.sin-gestion-almacen .alm-edicion [data-accion="borrar"] { display: none !important; }
+body.sin-gestion-almacen .alm-edicion input,
+body.sin-gestion-almacen .alm-edicion select { pointer-events: none; opacity: .75; }

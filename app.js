@@ -74,10 +74,8 @@ window.equiposDb = {
    2. CONFIGURACIÓN
 ============================================================================= */
 
-// ── Detección de entorno ──────────────────────────────────────────────────
-// PROD  → hostname de producción   → Firebase indusguard-f2a96  (datos reales)
-// DEV   → localhost / 127.0.0.1 / file:// / red local → Firebase gestion-mantenimiento-2775
-// Para forzar DEV en cualquier host: FORCE_DEV = true  (nunca subir a prod)
+// ── Configuración de Firebase ─────────────────────────────────────────────
+// Un único proyecto para todos los entornos: gestion-mantenimiento-2775 (Realtime Database, europe-west1).
 const firebaseConfig = {
   apiKey: "AIzaSyCZCnrS2x6NN-90xWiHxp-GEptykBDlEx4",
   authDomain: "gestion-mantenimiento-2775.firebaseapp.com",
@@ -138,6 +136,7 @@ async function loginHibrido(email, password) {
     // Guardar uid en sessionStorage para uso interno
     localStorage.setItem('usuarioUid', uid);
     localStorage.setItem('usuarioRol', perfil.rol || 'operario');
+    localStorage.setItem('usuarioPermisos', JSON.stringify(perfil.permisos || {}));
     localStorage.setItem('usuarioNombre', perfil.nombre || email);
     localStorage.setItem('usuarioEmail', email);
     _guardarEmailReciente(email);
@@ -315,7 +314,8 @@ function _mostrarUsuarioEnMenu() {
   const eb  = document.getElementById('equiposBtn');
   const mab = document.getElementById('menuAdminBtn');
   if (wb)  wb.style.display  = esAdmin ? '' : 'none';
-  if (eb)  eb.style.display  = esAdmin ? '' : 'none';
+  if (eb)  eb.style.display  = (esAdmin || puede('equipos')) ? '' : 'none';
+  document.body.classList.toggle('sin-gestion-almacen', !puede('almacen'));
   if (mab) mab.style.display = esAdmin ? '' : 'none';
 }
 
@@ -500,6 +500,24 @@ async function verificarPin() {
     const u = auth.currentUser; if (!u) return false;
     const s = await realDb.ref('usuarios/' + u.uid + '/rol').once('value');
     return s.val() === 'admin';
+  } catch (e) { return false; }
+}
+
+// Permisos: admin todo; encargado = almacén + equipos; además, permisos sueltos en usuarios/{uid}/permisos
+const PERMISOS_ENCARGADO = ['almacen', 'equipos'];
+function puede(permiso) {
+  const rol = localStorage.getItem('usuarioRol');
+  if (rol === 'admin') return true;
+  if (rol === 'encargado' && PERMISOS_ENCARGADO.includes(permiso)) return true;
+  try { return JSON.parse(localStorage.getItem('usuarioPermisos') || '{}')[permiso] === true; } catch (e) { return false; }
+}
+window.puede = puede;
+async function verificarAcceso(permiso) {
+  try {
+    const u = auth.currentUser; if (!u) return false;
+    const p = (await realDb.ref('usuarios/' + u.uid).once('value')).val() || {};
+    if (p.estado !== 'activo') return false;
+    return p.rol === 'admin' || (p.rol === 'encargado' && PERMISOS_ENCARGADO.includes(permiso)) || !!(p.permisos && p.permisos[permiso] === true);
   } catch (e) { return false; }
 }
 
@@ -1779,8 +1797,8 @@ async function authenticateAdmin() {
 }
 
 // Pide PIN y navega a la pantalla indicada si es correcto
-async function _autenticarYMostrar(screenId) {
-  if (await verificarPin()) {
+async function _autenticarYMostrar(screenId, permiso) {
+  if (permiso ? await verificarAcceso(permiso) : await verificarPin()) {
     showScreen(screenId);
   } else {
     alert('Código incorrecto. Acceso denegado.');
@@ -2027,9 +2045,9 @@ function _renderEquiposNav(listaDiv) {
         const btn = document.createElement('div');
         btn.className = 'eq-familia';
         btn.innerHTML = `
-          <div class="eq-familia-header" onclick="window._equiposNavIr('zona','${fam.replace(/'/g,"\\'")}')">
+          <div class="eq-familia-header" onclick="window._equiposNavIr('zona',${_h(JSON.stringify(fam))})">
             <span class="eq-familia-icon">📂</span>
-            <span>${fam}</span>
+            <span>${_h(fam)}</span>
             <span class="eq-familia-count">${count} equipo(s)</span>
             <span class="eq-chevron">›</span>
           </div>`;
@@ -2049,7 +2067,7 @@ function _renderEquiposNav(listaDiv) {
     const back = document.createElement('div');
     back.className = 'eq-nav-back';
     back.innerHTML = `<button class="button back-button" onclick="window._equiposNavIr('familia')">‹ Familias</button>
-      <span class="eq-nav-breadcrumb">${fam}</span>`;
+      <span class="eq-nav-breadcrumb">${_h(fam)}</span>`;
     listaDiv.appendChild(back);
 
     [...zonas.entries()]
@@ -2058,7 +2076,7 @@ function _renderEquiposNav(listaDiv) {
         const btn = document.createElement('div');
         btn.className = 'eq-familia';
         btn.innerHTML = `
-          <div class="eq-familia-header" onclick="window._equiposNavIr('equipo','${fam.replace(/'/g,"\\'")}','${zona.replace(/'/g,"\\'")}')">
+          <div class="eq-familia-header" onclick="window._equiposNavIr('equipo',${_h(JSON.stringify(fam))},${_h(JSON.stringify(zona))})">
             <span class="eq-familia-icon">📍</span>
             <span>${_h(zona)}</span>
             <span class="eq-familia-count">${count} equipo(s)</span>
@@ -2079,8 +2097,8 @@ function _renderEquiposNav(listaDiv) {
     // Botón atrás
     const back = document.createElement('div');
     back.className = 'eq-nav-back';
-    back.innerHTML = `<button class="button back-button" onclick="window._equiposNavIr('zona','${fam.replace(/'/g,"\\'")}')">‹ Zonas</button>
-      <span class="eq-nav-breadcrumb">${fam} › ${_h(zona)}</span>`;
+    back.innerHTML = `<button class="button back-button" onclick="window._equiposNavIr('zona',${_h(JSON.stringify(fam))})">‹ Zonas</button>
+      <span class="eq-nav-breadcrumb">${_h(fam)} › ${_h(zona)}</span>`;
     listaDiv.appendChild(back);
 
     filtrados.forEach(equipo => {
@@ -2101,13 +2119,13 @@ function _renderEquiposNav(listaDiv) {
           <div class="eq-mantenimientos-periodicos" id="mant-ficha-${idx}">
             <p><strong>Mantenimientos periódicos:</strong></p>
             <div class="mant-ficha-lista">${_renderMantsFicha(equipo.equipo || '')}</div>
-            <button class="button" style="margin-top:6px;width:100%" onclick="_abrirPreventivoConEquipo('${(equipo.equipo || '').replace(/'/g, "\\'")}')">+ Añadir mantenimiento</button>
+            <button class="button" style="margin-top:6px;width:100%" onclick="_abrirPreventivoConEquipo(${_h(JSON.stringify(equipo.equipo || ''))})">+ Añadir mantenimiento</button>
           </div>
           ${_auditoriaEquipo(equipo.equipo || '')}
           <div class="edit-delete-buttons">
             <button class="button" onclick="editarEquipo(${idx})">Editar</button>
             <button class="button" onclick="eliminarEquipo(${idx})">Eliminar</button>
-            <button class="button" onclick="exportarHistorialEquipo('${_h(equipo.equipo) || ''}')">📋 Exportar historial</button>
+            <button class="button" onclick="exportarHistorialEquipo(${_h(JSON.stringify(equipo.equipo || ''))})">📋 Exportar historial</button>
           </div>
           <div class="edit-form" id="edit-equipo-${idx}">
             <div class="form-group"><label>Familia</label><input type="text" id="familia-${idx}" value="${_h(equipo.familia) || ''}"></div>
@@ -3858,7 +3876,6 @@ async function _guardarHistorialEquipo(nombreEquipo, entrada) {
     db.historialEquipos[nombreEquipo].length = 50;
   try {
     await realDb.ref(`instalaciones/${INST()}/historialEquipos`).set(db.historialEquipos);
-    await realDb.ref(`instalaciones/${INST()}/historialEquipos`).set(db.historialEquipos);
     localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
   } catch (e) { console.warn('historialEquipos sync error:', e); }
 }
@@ -4278,7 +4295,8 @@ async function cargarInstalaciones() {
     const equiposBtn = document.getElementById('equiposBtn');
     if (adminBtn)      adminBtn.style.display      = esAdmin ? '' : 'none';
     if (workOrderBtn)  workOrderBtn.style.display   = esAdmin ? '' : 'none';
-    if (equiposBtn)    equiposBtn.style.display      = esAdmin ? '' : 'none';
+    if (equiposBtn)    equiposBtn.style.display      = (esAdmin || puede('equipos')) ? '' : 'none';
+    document.body.classList.toggle('sin-gestion-almacen', !puede('almacen'));
     const cerrarBtn = document.getElementById('cerrarSesionBtn');
     if (cerrarBtn) cerrarBtn.style.display = '';
     actualizarBadgeNotificaciones();
@@ -4452,9 +4470,11 @@ async function cargarUsuariosAdmin() {
         <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">
           <button class="button" style="font-size:0.78rem;padding:4px 10px" onclick="cambiarEstadoUsuario('${uid}','activo')">✓ Activar</button>
           <button class="button back-button" style="font-size:0.78rem;padding:4px 10px" onclick="cambiarEstadoUsuario('${uid}','bloqueado')">✗ Bloquear</button>
-          <button class="button back-button" style="font-size:0.78rem;padding:4px 10px" onclick="cambiarRolUsuario('${uid}','${u.rol === 'admin' ? 'operario' : 'admin'}')">
-            ${u.rol === 'admin' ? '👤 Quitar admin' : '⭐ Hacer admin'}
-          </button>
+          <select style="font-size:0.78rem;padding:4px 6px" aria-label="Rol" onchange="cambiarRolUsuario('${uid}', this.value)">
+            <option value="operario" ${(u.rol || 'operario') === 'operario' ? 'selected' : ''}>Operario</option>
+            <option value="encargado" ${u.rol === 'encargado' ? 'selected' : ''}>Encargado</option>
+            <option value="admin" ${u.rol === 'admin' ? 'selected' : ''}>Administrador</option>
+          </select>
         </div>
         <div style="margin-top:6px">
           <label style="font-size:0.78rem">Instalaciones autorizadas:</label>
@@ -4476,6 +4496,7 @@ async function cambiarEstadoUsuario(uid, estado) {
 }
 
 async function cambiarRolUsuario(uid, rol) {
+  if (!['operario', 'encargado', 'admin'].includes(rol)) return;
   await realDb.ref('usuarios/' + uid + '/rol').set(rol);
   cargarUsuariosAdmin();
 }
@@ -5429,6 +5450,7 @@ async function _decidirPantallaInicial() {
       // Refrescar datos de perfil en localStorage
       localStorage.setItem('usuarioUid', user.uid);
       localStorage.setItem('usuarioRol', perfil.rol || 'operario');
+      localStorage.setItem('usuarioPermisos', JSON.stringify(perfil.permisos || {}));
       localStorage.setItem('usuarioNombre', perfil.nombre || user.email);
       localStorage.setItem('usuarioEmail', user.email);
       rol = perfil.rol || 'operario';
@@ -5511,7 +5533,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     // --- Módulos protegidos por PIN ---
     document.getElementById('workOrderBtn').addEventListener('click', () => _autenticarYMostrar('workOrderScreen'));
-    document.getElementById('equiposBtn').addEventListener('click',   () => _autenticarYMostrar('equiposScreen'));
+    document.getElementById('equiposBtn').addEventListener('click',   () => _autenticarYMostrar('equiposScreen', 'equipos'));
 
     // --- Importar JSON de equipos ---
     document.getElementById('equiposJsonFileInput').addEventListener('change', async (e) => {
@@ -8191,6 +8213,15 @@ function _cqMontar() {
       const panel = el('periodicidadAlta'); if (panel) panel.open = true;
     };
   }
+  // «Volver» de Periodicidad: a la ficha de origen si se llegó desde Equipos; si no, a Administración
+  window.volverDePeriodicidad = function () {
+    if (_origenAltaMantenimiento && _origenAltaMantenimiento.desde === 'equipos') {
+      _origenAltaMantenimiento = null;
+      showScreen('equiposScreen');
+      return;
+    }
+    showScreen('adminScreen');
+  };
 })();
 
 /* =============================================================================
@@ -8203,6 +8234,7 @@ function _cqMontar() {
   const el = id => document.getElementById(id);
   const norm = s => String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   const esAdmin = () => localStorage.getItem('usuarioRol') === 'admin';
+  const gestiona = () => (typeof puede === 'function' ? puede('almacen') : esAdmin());
   const quien = () => localStorage.getItem('usuarioNombre') || '';
   const ahora = () => new Date().toISOString();
   const ruta = () => 'instalaciones/' + INST() + '/almacen';
@@ -8280,7 +8312,7 @@ function _cqMontar() {
       '<button type="button" class="button" data-accion="guardar">Guardar cambios</button>' +
       '<button type="button" class="button back-button" data-accion="cerrar">Cancelar</button>' +
       '<button type="button" class="button back-button span-2" data-accion="pedir">🛒 Pedir reposición…</button>' +
-      (esAdmin() ? '<button type="button" class="button back-button span-2" data-accion="borrar">🗑 Eliminar artículo</button>' : '') +
+      (gestiona() ? '<button type="button" class="button back-button span-2" data-accion="borrar">🗑 Eliminar artículo</button>' : '') +
       '<p class="alm-meta span-2">Última modificación: ' + _h(a.actualizado ? new Date(a.actualizado).toLocaleString() : '—') + (a.por ? ' · ' + _h(a.por) : '') + '</p>' +
       '</div>';
   }
@@ -8457,6 +8489,7 @@ function _cqMontar() {
   }
 
   async function guardar(a, fila) {
+    if (!gestiona()) return;
     const d = leerCampos(fila); if (!d) return;
     d.actualizado = ahora(); d.por = quien();
     try { await realDb.ref(ruta() + '/' + a.id).update(d); Object.assign(a, d); abierto = null; pintar(); }
@@ -8464,7 +8497,7 @@ function _cqMontar() {
   }
 
   async function borrar(a) {
-    if (!esAdmin()) return;
+    if (!gestiona()) return;
     if (!confirm('¿Eliminar «' + a.nombre + '» del almacén? No se puede deshacer.')) return;
     try { await realDb.ref(ruta() + '/' + a.id).remove(); items = items.filter(x => x.id !== a.id); abierto = null; pintar(); }
     catch (e) { alert('No se pudo eliminar: ' + e.message); }
@@ -8830,7 +8863,7 @@ function _cqMontar() {
   }
 
   function htmlFila(x) {
-    const { eq, i, r, j } = x, b = bajo(r), adm = esAdmin();
+   const { eq, i, r, j } = x, b = bajo(r), adm = (typeof puede === 'function' ? puede('equipos') : esAdmin());
     return '<div class="alm-item' + (b ? ' alm-bajo' : '') + '" data-i="' + i + '" data-j="' + j + '"><div class="alm-fila">' +
       '<div class="alm-info"><strong>' + _h(r.nombre) + '</strong><small>' + _h(eq.equipo) + (eq.modelo ? ' (' + _h(eq.modelo) + ')' : '') + ' · ' + _h(eq.familia || '') + ' › ' + _h(eq.zona || '') + '</small></div>' +
       (r.ubicacion ? '<span class="alm-ubic">📍 ' + _h(r.ubicacion) + '</span>' : '<span class="alm-ubic alm-sin">Sin ubicación</span>') +

@@ -237,7 +237,7 @@
       <button class="button" id="toggleListaMantenimientos" onclick="toggleListaMantenimientos()">Mostrar mantenimientos</button>
       <div id="listaMantenimientosPeriodicos"></div>
     </div>
-    <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
+    <button class="button back-button" onclick="volverDePeriodicidad()">← Volver</button>
   </div>
 
   <!-- ── Administración: Backup y restauración ── -->
@@ -786,7 +786,7 @@
     <details class="form-container plegable">
       <summary>Importar y exportar (CSV)</summary>
       <div class="plegable-cuerpo form-grid">
-        <div>
+                <div id="almacenImportBloque">
           <div class="form-group">
             <label>Importar CSV (añade los artículos del archivo)</label>
             <input type="file" id="almacenCsvInput" accept=".csv,.txt">
