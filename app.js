@@ -110,7 +110,6 @@ auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL)
 
 auth.onAuthStateChanged((user) => {
   if (user && !user.isAnonymous) {
-    console.log('User is signed in:', user.uid, user.email);
     updateStockIcon();
   }
 });
@@ -142,7 +141,6 @@ async function loginHibrido(email, password) {
     _guardarEmailReciente(email);
     // Actualizar último acceso (no bloqueante)
     realDb.ref('usuarios/' + uid + '/ultimoAcceso').set(new Date().toISOString()).catch(() => {});
-    console.log('[Auth] Login OK:', email, '| rol:', perfil.rol);
     return { ok: true, perfil };
   } catch (e) {
     console.error('[Auth] loginHibrido error:', e);
@@ -592,7 +590,6 @@ async function loadFromLocalStorage() {
 
     const data = localStorage.getItem(LS_KEY_APP);
     if (data) {
-      console.log('Loading data from localStorage:', data);
       const loadedData = JSON.parse(data);
 
       // Saneamiento de arrays
@@ -633,7 +630,6 @@ async function loadFromLocalStorage() {
 
       reconstruirMantenimientos();
 
-      console.log('Loaded database:', db);
       actualizarListaMantenimientos();
     }
 
@@ -701,7 +697,6 @@ async function loadFromLocalStorage() {
 
   } catch (error) {
     console.error('Error loading data:', error);
-    console.log('Current database state:', db);
   }
 }
 
@@ -1753,6 +1748,7 @@ async function showScreen(screenId) {
     cargarUsuariosAdmin();
   }
   if (screenId === 'adminPeriodicidadScreen') {
+    _gruposMantAbiertos.prev = false; _gruposMantAbiertos.tar = false;
     updateAdminLists();
   }
   if (screenId === 'almacenScreen' && window.almacenAlEntrar) window.almacenAlEntrar();
@@ -1848,6 +1844,13 @@ function renderUsedSpareParts(spareParts) {
 }
 
 let _filtroMantenimientosTexto = '';
+
+// Estado abierto/cerrado de los dos grupos de Periodicidad (siempre cerrados al entrar en la pantalla)
+const _gruposMantAbiertos = { prev: false, tar: false };
+function _toggleGrupoMant(clave, seccion) {
+  seccion.classList.toggle('eq-collapsed');
+  _gruposMantAbiertos[clave] = !seccion.classList.contains('eq-collapsed');
+}
 
 async function actualizarListaMantenimientos() {
   const listaDiv = document.getElementById('listaMantenimientosPeriodicos');
@@ -1953,7 +1956,7 @@ async function actualizarListaMantenimientos() {
   // ── BLOQUE 1: Preventivos de Equipos ─────────────────────────────────────
   const vencPrev = preventivos.filter(esMantenimientoVencido).length;
   const secPrev = document.createElement('div');
-  secPrev.className = 'eq-familia' + ((vencPrev || filtroTexto) ? '' : ' eq-collapsed');
+  secPrev.className = 'eq-familia' + ((filtroTexto || _gruposMantAbiertos.prev) ? '' : ' eq-collapsed');
   secPrev.style.borderColor = 'var(--blue)';
   secPrev.innerHTML = `
     <div class="eq-familia-header" onclick="this.parentElement.classList.toggle('eq-collapsed')"
@@ -1965,6 +1968,7 @@ async function actualizarListaMantenimientos() {
     <div class="eq-familia-body"></div>
   `;
   listaDiv.appendChild(secPrev);
+  secPrev.querySelector('.eq-familia-header').onclick = () => _toggleGrupoMant('prev', secPrev);
   const bodyPrev = secPrev.querySelector('.eq-familia-body');
 
   preventivos
@@ -1975,7 +1979,7 @@ async function actualizarListaMantenimientos() {
   // ── BLOQUE 2: Trabajos Periódicos ─────────────────────────────────────────
   const vencTar = tareas.filter(esMantenimientoVencido).length;
   const secTar = document.createElement('div');
-  secTar.className = 'eq-familia' + ((vencTar || filtroTexto) ? '' : ' eq-collapsed');
+  secTar.className = 'eq-familia' + ((filtroTexto || _gruposMantAbiertos.tar) ? '' : ' eq-collapsed');
   secTar.style.borderColor = 'var(--green)';
   secTar.innerHTML = `
     <div class="eq-familia-header" onclick="this.parentElement.classList.toggle('eq-collapsed')"
@@ -1987,6 +1991,7 @@ async function actualizarListaMantenimientos() {
     <div class="eq-familia-body"></div>
   `;
   listaDiv.appendChild(secTar);
+  secTar.querySelector('.eq-familia-header').onclick = () => _toggleGrupoMant('tar', secTar);
   const bodyTar = secTar.querySelector('.eq-familia-body');
 
   tareas
@@ -2573,7 +2578,15 @@ async function addSparePart(orderId) {
   order.spareParts.push({ nombre: sparePart, cantidad: quantity });
 
   try {
-    realDb.ref(`instalaciones/${INST()}/stock`).set(window.equiposDb.equiposGuardados);
+    // Escribe solo la cantidad de ese recambio, en el equipo que posee la lista (los equipos con recambios compartidos apuntan a la del principal)
+    const _lista = window.equiposDb.equiposGuardados;
+    const _ir = (equipoEnStock.recambios || []).indexOf(recambioEnStock);
+    // Todas las fichas que comparten esta lista de recambios (el principal y los que dependen de él)
+    const _cambios = {};
+    _lista.forEach((e, i) => { if (e && e.recambios === equipoEnStock.recambios && _ir >= 0) _cambios[`${i}/recambios/${_ir}/cantidad`] = recambioEnStock.cantidad; });
+    const _refStock = realDb.ref(`instalaciones/${INST()}/stock`);
+    const _pStock = Object.keys(_cambios).length ? _refStock.update(_cambios) : _refStock.set(_lista);
+    _pStock.catch(err => { console.error('Stock no guardado:', err); alert('No se pudo guardar el stock del recambio: ' + err.message); });
     realDb.ref(woRef).set(woArr);
     localStorage.setItem(LS_KEY_EQUIPOS, JSON.stringify(window.equiposDb));
     localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
@@ -4477,6 +4490,7 @@ async function cargarUsuariosAdmin() {
           </select>
         </div>
         <div style="margin-top:6px">
+          ${_htmlPermisosUsuario(uid, u)}
           <label style="font-size:0.78rem">Instalaciones autorizadas:</label>
           <select id="instSelect-${uid}" multiple style="width:100%;margin-top:4px;height:${Math.min(instIds.length,4)*28}px;background:var(--bg-input,#1e1e1e);color:var(--text);border:1px solid var(--border);border-radius:6px">
             ${instOpts}
@@ -4489,6 +4503,26 @@ async function cargarUsuariosAdmin() {
     contenedor.innerHTML = '<p style="color:var(--red)">Error al cargar usuarios: ' + e.message + '</p>';
   }
 }
+
+// Casillas de permisos extra por usuario (un operario con permiso 'almacen' o 'equipos' accede como un encargado a esa parte)
+function _htmlPermisosUsuario(uid, u) {
+  const rol = u.rol || 'operario';
+  const estilo = 'font-size:0.78rem;margin-bottom:8px';
+  if (rol === 'admin') return `<p style="${estilo};color:var(--text-muted)">Permisos: acceso total</p>`;
+  if (rol === 'encargado') return `<p style="${estilo};color:var(--text-muted)">Permisos: Almacén y Equipos e inventario incluidos en el rol</p>`;
+  const p = u.permisos || {};
+  const caja = (clave, texto) => `<label style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><input type="checkbox" ${p[clave] === true ? 'checked' : ''} onchange="cambiarPermisoUsuario('${uid}','${clave}',this.checked)"> ${texto}</label>`;
+  return `<div style="${estilo}">Permisos extra: ${caja('almacen', 'Almacén (gestión total)')}${caja('equipos', 'Equipos e inventario')}</div>`;
+}
+
+async function cambiarPermisoUsuario(uid, clave, activo) {
+  if (!['almacen', 'equipos'].includes(clave)) return;
+  try {
+    const r = realDb.ref('usuarios/' + uid + '/permisos/' + clave);
+    if (activo) await r.set(true); else await r.remove();
+  } catch (e) { alert('No se pudo guardar el permiso: ' + e.message); cargarUsuariosAdmin(); }
+}
+window.cambiarPermisoUsuario = cambiarPermisoUsuario;
 
 async function cambiarEstadoUsuario(uid, estado) {
   await realDb.ref('usuarios/' + uid + '/estado').set(estado);
@@ -4865,11 +4899,17 @@ function _comprimirImagen(src, max = 1280, q = 0.65) {
   return new Promise((ok, ko) => {
     const img = new Image();
     img.onload = () => {
-      const k = Math.min(1, max / Math.max(img.width, img.height));
-      const c = document.createElement('canvas');
-      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      ok(c.toDataURL('image/jpeg', q));
+      let m = max, cal = q, out;
+      for (let i = 0; i < 6; i++) {
+        const k = Math.min(1, m / Math.max(img.width, img.height));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        out = c.toDataURL('image/jpeg', cal);
+        if (out.length < 380000) break;                 // las reglas rechazan más de 400000 caracteres
+        m = Math.round(m * 0.8); cal = Math.max(0.4, cal - 0.05);
+      }
+      ok(out);
     };
     img.onerror = () => ko(new Error('No se pudo leer la imagen'));
     img.src = src;
@@ -7882,8 +7922,8 @@ function _cqMontar() {
   };
   window.generarFormularioRecambios = function (recambios, idx) {
     const eq = eqs()[idx], m = maestroDe(eq);
-    if (m) return `<p class="cmp-nota">Estos recambios se comparten con <b>${esc(m.equipo)}</b>. Se editan desde ese equipo.</p>${window.generarListaRecambios(recambios)}`;
-    return (recambios || []).map((r, i) => `
+    const nota = m ? `<p class="cmp-nota">Estos recambios son comunes con <b>${esc([m, ...dependientes(m)].filter(e => e !== eq).map(e => e.equipo).join(', '))}</b>: lo que cambies aquí se aplica a todos ellos.</p>` : '';
+    return nota + (recambios || []).map((r, i) => `
     <div class="spare-part-item" style="display:flex;gap:6px;flex-wrap:wrap">
       <input type="text"   id="recambio-nombre-${idx}-${i}"   value="${esc(r.nombre)}" style="flex:2 1 140px">
       <input type="number" id="recambio-cantidad-${idx}-${i}" value="${esc(r.cantidad)}" min="0" title="Cantidad en stock" style="flex:1 1 70px">
@@ -7899,7 +7939,9 @@ function _cqMontar() {
       const cEl = document.getElementById(`recambio-cantidad-${index}-${k}`), mEl = document.getElementById(`recambio-minimo-${index}-${k}`);
       const cantidad = parseInt(cEl ? cEl.value : '', 10), minimo = parseInt(mEl ? mEl.value : '', 10);
       if (!nombre || isNaN(cantidad) || cantidad < 0) return null;
-      const r = { nombre, cantidad }; if (!isNaN(minimo) && minimo > 0) r.minimo = minimo; filas.push(r);
+      const r = { nombre, cantidad }; if (!isNaN(minimo) && minimo > 0) r.minimo = minimo;
+      const prev = ((eqs()[index] || {}).recambios || [])[k]; if (prev && prev.ubicacion) r.ubicacion = prev.ubicacion;   // conserva la ubicación en almacén del recambio
+      filas.push(r);
     }
     return filas;
   }
@@ -7910,7 +7952,7 @@ function _cqMontar() {
     const cantidad = parseInt(document.getElementById(`nuevo-recambio-cantidad-${idx}`).value, 10);
     if (!nombre || isNaN(cantidad) || cantidad < 0) { alert('Por favor ingrese un nombre y una cantidad válida para el recambio'); return; }
     const equipo = eqs()[idx]; if (!equipo) return;
-    if (maestroDe(equipo)) { alert('Este equipo comparte los recambios con otro. Añade el recambio desde el equipo principal.'); return; }
+    // si el equipo está enlazado, su lista de recambios es la común: el recambio nuevo queda para todos los equipos enlazados
     if (!equipo.recambios) equipo.recambios = [{ nombre: equipo.recambio, cantidad: equipo.cantidad }];
     equipo.recambios.forEach((r, k) => {                                   // conservar lo que ya se ha tecleado
       const n = document.getElementById(`recambio-nombre-${idx}-${k}`), c = document.getElementById(`recambio-cantidad-${idx}-${k}`), m = document.getElementById(`recambio-minimo-${idx}-${k}`);
@@ -7939,7 +7981,15 @@ function _cqMontar() {
       if ((actual.recambios || []).length && !maestroDe(actual, lista) && !confirm(`«${equipo}» dejará de tener recambios propios y usará los de «${destino}». ¿Continuar?`)) return;
     }
     let recambios;
-    if (destino) recambios = [];                                                                          // usará los del otro equipo
+    if (destino && maestroDe(actual, lista) && maestroDe(actual, lista).equipo === destino) {
+      // sigue enlazado: lo que hay en pantalla se aplica a la lista común, y por tanto a todos los equipos enlazados
+      if (document.getElementById(`recambio-nombre-${index}-0`)) {
+        const filas = leerFilas(index);
+        if (!filas) { alert('Por favor complete todos los campos de recambios correctamente'); return; }
+        maestroDe(actual, lista).recambios = filas;
+      }
+      recambios = [];
+    } else if (destino) recambios = [];                                                                          // usará los del otro equipo
     else if (maestroDe(actual, lista)) recambios = JSON.parse(JSON.stringify(maestroDe(actual, lista).recambios || []));  // deja de compartir: copia propia
     else if (document.getElementById(`recambio-nombre-${index}-0`)) {
       recambios = leerFilas(index);
@@ -7970,11 +8020,11 @@ function _cqMontar() {
           .sort((a, b) => ((b.e.modelo === eq.modelo) - (a.e.modelo === eq.modelo)) || String(a.e.equipo).localeCompare(String(b.e.equipo)));
         const bloque = document.createElement('div'); bloque.className = 'form-group cmp-bloque';
         bloque.innerHTML = dep.length
-          ? `<label>Recambios compartidos</label><p class="cmp-nota">Estos recambios también los usan: <b>${dep.map(d => esc(d.equipo)).join(', ')}</b>. El stock se controla aquí, una sola vez.</p>`
+          ? `<label>Recambios compartidos</label><p class="cmp-nota">Estos recambios también los usan: <b>${dep.map(d => esc(d.equipo)).join(', ')}</b>. Es una sola lista: los cambios hechos en cualquiera de ellos se aplican a todos.</p>`
           : `<label>¿Comparte los recambios con otro equipo idéntico?</label><select id="comparte-${idx}"><option value="">No, tiene recambios propios</option>${cand.map(({ e }) => `<option value="${esc(e.equipo)}"${m && m.equipo === e.equipo ? ' selected' : ''}>${esc(e.equipo)}${e.modelo === eq.modelo ? ' · mismo modelo' : ''}</option>`).join('')}</select><p class="cmp-nota">Si comparte, no hay que repetir los recambios: se usa el stock del otro equipo y el aviso sale una sola vez.</p>`;
         const grp = form.querySelector(`#recambios-list-${idx}`); const ancla = grp && grp.closest('.form-group');
         (ancla || form).insertAdjacentElement('beforebegin', bloque);
-        if (m) { const af = form.querySelector('.add-spare-part-form'); if (af) af.style.display = 'none'; }
+        // los equipos enlazados también pueden añadir recambios: se aplican a la lista común
         const info = dep.length ? `🔗 Recambios compartidos con: ${dep.map(d => esc(d.equipo)).join(', ')}` : (m ? `🔗 Recambios compartidos con <b>${esc(m.equipo)}</b>` : '');
         const lst = rec.querySelector('.spare-parts-list');
         if (info && lst && !rec.querySelector('.cmp-enlace')) lst.insertAdjacentHTML('beforebegin', `<p class="cmp-enlace">${info}</p>`);
@@ -7985,6 +8035,30 @@ function _cqMontar() {
     const origLista = window.actualizarListaEquipos;
     window.actualizarListaEquipos = function () { const r = origLista.apply(this, arguments); if (r && typeof r.then === 'function') return r.then(v => { inyectar(); return v; }); inyectar(); return r; };
   }
+
+  // La navegación por familia y zona pinta las fichas con _renderEquiposNav: ahí también hay que añadir el selector
+  if (typeof window._renderEquiposNav === 'function') {
+    const origNav = window._renderEquiposNav;
+    window._renderEquiposNav = function () { const r = origNav.apply(this, arguments); inyectar(); return r; };
+  }
+
+  /* Al eliminar el equipo principal de un grupo: el primer dependiente pasa a ser el principal y conserva la lista de recambios */
+  const eliminarOrig = window.eliminarEquipo;
+  window.eliminarEquipo = async function (originalIndex) {
+    const eq = eqs()[originalIndex];
+    const deps = eq ? dependientes(eq) : [];
+    if (!eq || !deps.length) return eliminarOrig.apply(this, arguments);
+    const nuevo = deps[0];
+    if (!confirm(`«${eq.equipo}» comparte sus recambios con: ${deps.map(d => d.equipo).join(', ')}.\n\nSi lo eliminas, «${nuevo.equipo}» pasa a ser el equipo principal y conserva la lista de recambios. ¿Continuar?`)) return;
+    nuevo.recambios = JSON.parse(JSON.stringify(eq.recambios || []));
+    delete nuevo.recambiosDe;
+    deps.slice(1).forEach(d => { d.recambiosDe = nuevo.equipo; });
+    enlazar();
+    const confirmOrig = window.confirm; window.confirm = () => true;     // la función original ya no vuelve a preguntar
+    const p = eliminarOrig.apply(this, arguments);
+    window.confirm = confirmOrig;
+    await p;
+  };
 
   /* Alertas de stock: una vez por recambio compartido, con botón para pedirlo */
   async function pedir(item) {
@@ -8337,7 +8411,7 @@ function _cqMontar() {
         (a.ubicacion ? '<span class="alm-ubic">📍 ' + _h(a.ubicacion) + '</span>' : '<span class="alm-ubic alm-sin">Sin ubicación</span>') +
         '<div class="alm-cant">' +
           '<button type="button" class="alm-btn" data-accion="menos" aria-label="Restar uno">−</button>' +
-          '<span class="alm-num">' + _h(a.cantidad) + '<small>' + _h(a.unidad || 'ud') + '</small></span>' +
+          '<span class="alm-num" data-accion="contar" title="Toca para fijar la cantidad contada">' + _h(a.cantidad) + '<small>' + _h(a.unidad || 'ud') + '</small></span>' +
           '<button type="button" class="alm-btn" data-accion="mas" aria-label="Sumar uno">+</button>' +
         '</div>' +
       '</div>' + (abierto === a.id ? htmlEdicion(a) : '') + '</div>';
@@ -8488,11 +8562,31 @@ function _cqMontar() {
     } catch (e) { alert('No se pudo cambiar la cantidad: ' + e.message); }
   }
 
+  async function contar(a) {
+    const txt = prompt('Cantidad real de «' + a.nombre + '» (' + (a.unidad || 'ud') + '):', a.cantidad);
+    if (txt === null) return;
+    const n = Number(String(txt).replace(',', '.').trim());
+    if (String(txt).trim() === '' || !isFinite(n) || n < 0) { alert('Escribe un número igual o mayor que 0'); return; }
+    const nuevo = Math.round(n * 100) / 100;
+    try {
+      const estabaBajo = bajoMinimo(a);
+      await realDb.ref(ruta() + '/' + a.id + '/cantidad').set(nuevo);
+      a.cantidad = nuevo; a.actualizado = ahora(); a.por = quien();
+      realDb.ref(ruta() + '/' + a.id).update({ actualizado: a.actualizado, por: a.por }).catch(() => {});
+      if (!estabaBajo && bajoMinimo(a) && !abierta(a)) setTimeout(() => pedir(a, 'Queda poco de «' + a.nombre + '» (' + a.cantidad + ' ' + (a.unidad || 'ud') + ').\n'), 50);
+      refrescarFila(a);
+    } catch (e) { alert('No se pudo guardar la cantidad: ' + e.message); }
+  }
+
   async function guardar(a, fila) {
     if (!gestiona()) return;
     const d = leerCampos(fila); if (!d) return;
     d.actualizado = ahora(); d.por = quien();
-    try { await realDb.ref(ruta() + '/' + a.id).update(d); Object.assign(a, d); abierto = null; pintar(); }
+    const estabaBajo = bajoMinimo(a);
+    try {
+      await realDb.ref(ruta() + '/' + a.id).update(d); Object.assign(a, d); abierto = null; pintar();
+      if (!estabaBajo && bajoMinimo(a) && !abierta(a)) setTimeout(() => pedir(a, 'Queda poco de «' + a.nombre + '» (' + a.cantidad + ' ' + (a.unidad || 'ud') + ').\n'), 50);
+    }
     catch (e) { alert('No se pudo guardar: ' + e.message); }
   }
 
@@ -8688,6 +8782,7 @@ function _cqMontar() {
         case 'cerrar': abierto = null; pintarLista(); break;
         case 'mas': ajustar(a, 1); break;
         case 'menos': ajustar(a, -1); break;
+        case 'contar': contar(a); break;
         case 'guardar': guardar(a, fila); break;
         case 'borrar': borrar(a); break;
         case 'pedir': pedir(a); break;
@@ -8906,7 +9001,7 @@ function _cqMontar() {
         if (m > 0) r.minimo = m; else delete r.minimo;
         await guardar(); pintar();
       } else if (a === 'ver') {
-        window._equiposNavIr('equipo', eq.familia || '(Sin familia)', eq.zona || '(Sin zona)'); showScreen('equiposScreen');
+        showScreen('equiposScreen'); window._equiposNavIr('equipo', eq.familia || '(Sin familia)', eq.zona || '(Sin zona)');
         setTimeout(() => {
           const f = document.querySelector('#listaEquiposGuardados .equipo-record[data-equipo-index="' + i + '"]');
           if (!f) return; const d = f.querySelector('.eq-detail'); if (d) d.classList.add('eq-detail-open'); f.scrollIntoView({ block: 'start' });

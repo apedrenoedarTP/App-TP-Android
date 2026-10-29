@@ -1769,3 +1769,4 @@ body.sin-gestion-almacen .alm-edicion [data-accion="guardar"],
 body.sin-gestion-almacen .alm-edicion [data-accion="borrar"] { display: none !important; }
 body.sin-gestion-almacen .alm-edicion input,
 body.sin-gestion-almacen .alm-edicion select { pointer-events: none; opacity: .75; }
+.alm-num[data-accion="contar"] { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 4px; }
