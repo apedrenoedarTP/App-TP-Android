@@ -1770,3 +1770,100 @@ body.sin-gestion-almacen .alm-edicion [data-accion="borrar"] { display: none !im
 body.sin-gestion-almacen .alm-edicion input,
 body.sin-gestion-almacen .alm-edicion select { pointer-events: none; opacity: .75; }
 .alm-num[data-accion="contar"] { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 4px; }
+.alm-num[data-a="contar"] { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 4px; }
+
+/* ===== ADMINISTRACIÓN: menú agrupado como el principal y pantallas internas en ventana ===== */
+#adminScreen[style*="block"] {
+  display: flex !important; flex-wrap: wrap; justify-content: center; align-content: flex-start; gap: 12px;
+  max-width: 820px; margin: 8px auto 0; padding: 28px 28px 24px;
+  background: rgba(14,17,23,.6); border: 1px solid var(--border); border-radius: 18px;
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+#adminScreen > .title { order: 1; flex: 0 0 100%; padding: 0; text-align: center; font-size: 1.9rem; }
+#adminScreen > .title-sub { display: none; }
+#adminScreen > .menu-grupo {
+  order: 2; flex: 0 0 100%; margin: 6px 0 0; padding: 0 0 6px; border-bottom: 1px solid var(--border);
+  font-size: .95rem; font-weight: 600; color: var(--text-secondary); text-align: left;
+}
+#adminScreen > .menu-grid { order: 3; flex: 0 0 100%; display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 0; }
+#adminScreen > .menu-grupo-sistema { order: 4; }
+#adminScreen > .menu-grid-sistema { order: 5; }
+#adminScreen .menu-grid .menu-btn { flex: 0 0 calc((100% - 36px) / 4); min-height: 96px; padding: 16px 10px; border-radius: 14px; font-size: 1rem; }
+#adminScreen .menu-grid .menu-btn .icon { width: 42px; height: 42px; font-size: 20px; }
+#adminScreen > .back-button { order: 20; flex: 0 1 220px; margin-top: 10px; }
+@media (max-width: 640px) {
+  #adminScreen[style*="block"] { margin-top: 44px; padding: 18px 14px; border-radius: 14px; }
+  #adminScreen .menu-grid .menu-btn { flex-basis: calc((100% - 12px) / 2); }
+}
+
+/* Pantallas internas de Administración: ventana más ancha y paneles plegables con aire */
+#adminUsuariosScreen { max-width: 1100px; }
+#adminInstalacionesScreen, #adminAsignacionesScreen, #adminHistorialScreen,
+#adminNotificacionesScreen, #adminBackupScreen, #adminAuditoriaScreen { max-width: 900px; }
+#listaUsuariosAdmin { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+#historialUsuarioDetalle { max-height: none !important; overflow: visible !important; }
+#adminAsignacionesScreen details.plegable, #adminBackupScreen details.plegable,
+#adminInstalacionesScreen details.plegable, #adminNotificacionesScreen details.plegable { margin-bottom: 10px; }
+.bk-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+
+/* ===== FORMULARIOS DE TRABAJO: ventana más ancha y campos en 2 columnas ===== */
+@supports selector(:has(*)) {
+  #incidenciasScreen, #rutinariasScreen, #preventivoScreen,
+  #correctivoScreen, #modificativoScreen, #workOrderScreen { max-width: 900px; }
+
+  :is(#incidenciasScreen, #rutinariasScreen, #preventivoScreen, #correctivoScreen, #modificativoScreen, #workOrderScreen) .form-container {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; align-items: start;
+  }
+  :is(#incidenciasScreen, #rutinariasScreen, #preventivoScreen, #correctivoScreen, #modificativoScreen, #workOrderScreen) .form-container > .form-group { margin-bottom: 0; }
+
+  /* A ancho completo: título, botones, bloques de administrador y los campos largos */
+  :is(#incidenciasScreen, #rutinariasScreen, #preventivoScreen, #correctivoScreen, #modificativoScreen, #workOrderScreen) .form-container > :is(h3, .button, .form-actions, .admin-only, .photo-controls),
+  :is(#incidenciasScreen, #rutinariasScreen, #preventivoScreen, #correctivoScreen, #modificativoScreen, #workOrderScreen) .form-container > .form-group:is(:has(textarea), :has(button), :has(.photo-controls), :has(input[list]), :has([id*="quipo" i])) {
+    grid-column: 1 / -1;
+  }
+
+  /* Partes de trabajo: «Asignar a» sin scroll interno, en rejilla */
+  #asignadoWorkOrder { max-height: none !important; overflow: visible !important; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px 12px; }
+
+  @media (max-width: 640px) {
+    :is(#incidenciasScreen, #rutinariasScreen, #preventivoScreen, #correctivoScreen, #modificativoScreen, #workOrderScreen) .form-container { grid-template-columns: 1fr; }
+  }
+}
+
+/* ===== COMPRA, CENTRO OPERATIVO, CUADRANTE: ventanas más anchas y listas en columnas ===== */
+#compraScreen, #compraUnificadaScreen, #cambiosTurnoScreen { max-width: 900px; }
+#centroOperativoScreen { max-width: 1000px; }
+#cuadranteScreen { max-width: 1200px; }
+
+/* Compra: lista en 2 columnas; títulos de sección y avisos a todo el ancho */
+@media (min-width: 760px) {
+  #compraScreen #cpLista { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; align-items: start; }
+  #compraScreen #cpLista > .cp-cab, #compraScreen #cpLista > .cp-vacio { grid-column: 1 / -1; }
+}
+
+/* Centro operativo: secciones en 2 columnas; indicadores y accesos rápidos a todo el ancho */
+#centroOperativoResult { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; align-items: start; }
+#centroOperativoResult > :first-child { grid-column: 1 / -1; }
+@supports selector(:has(*)) { #centroOperativoResult > :has(button) { grid-column: 1 / -1; } }
+@media (max-width: 640px) { #centroOperativoResult { grid-template-columns: 1fr; } }
+
+/* ===== MENÚ: fichas de Gestión y pantallas «Mis gestiones» / «Compras» ===== */
+#menuAlmacenBtn, #menuCentroOperativoBtn, #menuAdminBtn, #menuCuadranteBtn,
+#menuCambiosTurnoBtn, #menuCompraBtn, #menuCompraUnificadaBtn { display: none !important; }
+#menuScreen .menu-grid-gestion { order: 6; }
+
+:is(#misGestionesScreen, #comprasHubScreen)[style*="block"] {
+  display: flex !important; flex-wrap: wrap; justify-content: center; align-content: flex-start; gap: 12px;
+  max-width: 820px; margin: 8px auto 0; padding: 28px 28px 24px;
+  background: rgba(14,17,23,.6); border: 1px solid var(--border); border-radius: 18px;
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+:is(#misGestionesScreen, #comprasHubScreen) > .title { flex: 0 0 100%; padding: 0; text-align: center; font-size: 1.9rem; }
+:is(#misGestionesScreen, #comprasHubScreen) > .title-sub { flex: 0 0 100%; margin: 0 0 6px; text-align: center; }
+:is(#misGestionesScreen, #comprasHubScreen) > .hub-grid { flex: 0 0 100%; display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; margin: 0; }
+:is(#misGestionesScreen, #comprasHubScreen) .hub-grid .menu-btn { flex: 1 1 200px; max-width: 260px; min-height: 120px; padding: 18px 12px; border-radius: 14px; }
+:is(#misGestionesScreen, #comprasHubScreen) .hub-grid .menu-btn .icon { width: 48px; height: 48px; font-size: 24px; }
+:is(#misGestionesScreen, #comprasHubScreen) > .back-button { flex: 0 1 220px; margin-top: 10px; }
+@media (max-width: 640px) {
+  :is(#misGestionesScreen, #comprasHubScreen)[style*="block"] { margin-top: 44px; padding: 18px 14px; border-radius: 14px; }
+}

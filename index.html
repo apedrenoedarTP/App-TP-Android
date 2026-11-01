@@ -156,21 +156,10 @@
     <h1 class="title">Administración</h1>
     <p class="title-sub">Configuración del sistema</p>
 
+        <p class="menu-grupo">Planificación y seguimiento</p>
     <div class="menu-grid">
-      <button class="menu-btn" onclick="showScreen('adminUsuariosScreen')">
-        <span class="icon">👤</span> Usuarios
-      </button>
       <button class="menu-btn" onclick="showScreen('adminPeriodicidadScreen')">
         <span class="icon">📅</span> Periodicidad
-      </button>
-      <button class="menu-btn" onclick="showScreen('adminInstalacionesScreen')">
-        <span class="icon">🏭</span> Instalaciones
-      </button>
-      <button class="menu-btn" onclick="showScreen('adminNotificacionesScreen')">
-        <span class="icon">📢</span> Notificaciones
-      </button>
-      <button class="menu-btn" onclick="showScreen('adminAuditoriaScreen')">
-        <span class="icon">🔥</span> Auditoría
       </button>
       <button class="menu-btn" onclick="showScreen('adminAsignacionesScreen')">
         <span class="icon">📋</span> Asignaciones
@@ -178,8 +167,24 @@
       <button class="menu-btn" onclick="showScreen('adminHistorialScreen')">
         <span class="icon">📊</span> Historial
       </button>
-      <button class="menu-btn menu-btn-full" onclick="showScreen('adminBackupScreen')">
-        <span class="icon">💾</span> Backup y restauración
+      <button class="menu-btn" onclick="showScreen('adminAuditoriaScreen')">
+        <span class="icon">🔥</span> Auditoría
+      </button>
+    </div>
+
+    <p class="menu-grupo menu-grupo-sistema">Sistema</p>
+    <div class="menu-grid menu-grid-sistema">
+      <button class="menu-btn" onclick="showScreen('adminUsuariosScreen')">
+        <span class="icon">👤</span> Usuarios
+      </button>
+      <button class="menu-btn" onclick="showScreen('adminInstalacionesScreen')">
+        <span class="icon">🏭</span> Instalaciones
+      </button>
+      <button class="menu-btn" onclick="showScreen('adminNotificacionesScreen')">
+        <span class="icon">📢</span> Notificaciones
+      </button>
+      <button class="menu-btn" onclick="showScreen('adminBackupScreen')">
+        <span class="icon">💾</span> Backup
       </button>
     </div>
 
@@ -241,41 +246,59 @@
   </div>
 
   <!-- ── Administración: Backup y restauración ── -->
-  <div class="screen" id="adminBackupScreen">
+    <div class="screen" id="adminBackupScreen">
     <h1 class="title">💾 Backup y restauración</h1>
     <div class="form-container">
-      <button class="button" onclick="exportarBackup()">↓ Exportar configuración (JSON)</button>
-      <button class="button back-button" style="margin-top:6px" onclick="exportarAveriasCSV()">↓ CSV Averías</button>
-      <button class="button back-button" style="margin-top:6px" onclick="exportarTareasOperativasCSV()">↓ CSV Tareas operativas</button>
-      <button class="button back-button" style="margin-top:6px" onclick="exportarMantenimientosCSV()">↓ CSV Mantenimientos</button>
-      <input type="file" id="inputImportarMant" accept=".csv" style="display:none" onchange="importarMantenimientosCSV(this.files[0])">
-      <button class="button back-button" onclick="document.getElementById('inputImportarMant').click()">⬆️ Importar mantenimientos CSV</button>
-      <div class="form-group" style="margin-top:16px">
-        <label>Importar configuración</label>
-        <input type="file" id="backupFileInput" accept=".json">
-      </div>
-      <button class="button" onclick="importarBackup()">↑ Importar configuración</button>
+      <details class="plegable" open>
+        <summary>↓ Exportar</summary>
+        <div class="plegable-cuerpo bk-grid">
+          <button class="button" onclick="exportarBackup()">↓ Configuración (JSON)</button>
+          <button class="button back-button" onclick="exportarAveriasCSV()">↓ CSV Averías</button>
+          <button class="button back-button" onclick="exportarTareasOperativasCSV()">↓ CSV Tareas operativas</button>
+          <button class="button back-button" onclick="exportarMantenimientosCSV()">↓ CSV Mantenimientos</button>
+        </div>
+      </details>
+      <details class="plegable">
+        <summary>↑ Importar</summary>
+        <div class="plegable-cuerpo">
+          <input type="file" id="inputImportarMant" accept=".csv" style="display:none" onchange="importarMantenimientosCSV(this.files[0])">
+          <button class="button back-button" onclick="document.getElementById('inputImportarMant').click()">⬆️ Importar mantenimientos CSV</button>
+          <div class="form-group" style="margin-top:16px">
+            <label>Importar configuración</label>
+            <input type="file" id="backupFileInput" accept=".json">
+          </div>
+          <button class="button" onclick="importarBackup()">↑ Importar configuración</button>
+        </div>
+      </details>
     </div>
     <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
   </div>
 
   <!-- ── Administración: Instalaciones ── -->
-  <div class="screen" id="adminInstalacionesScreen">
+    <div class="screen" id="adminInstalacionesScreen">
     <h1 class="title">🏭 Instalaciones</h1>
     <div class="form-container">
       <div id="listaInstalacionesAdmin" style="margin-bottom:12px"></div>
-      <div class="form-group">
-        <label>Nueva instalación (requiere PIN admin)</label>
-        <input type="text" id="nuevaInstalacionNombre" placeholder="Nombre de la instalación">
-      </div>
-      <button class="button" onclick="crearInstalacion()">+ Crear instalación</button>
-      <hr style="margin:16px 0;border-color:var(--border)">
-      <h4 style="margin-bottom:8px">Migrar datos a instalación activa</h4>
-      <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:10px">
-        Copia todos los datos de edarData a la instalación seleccionada actualmente.
-        Ejecutar solo una vez por instalación.
-      </p>
-      <button class="button back-button" onclick="migrarDatosAInstalacion()">⬆ Migrar datos a esta instalación</button>
+      <details class="plegable">
+        <summary>+ Nueva instalación</summary>
+        <div class="plegable-cuerpo">
+          <div class="form-group">
+            <label>Nombre (solo administrador)</label>
+            <input type="text" id="nuevaInstalacionNombre" placeholder="Nombre de la instalación">
+          </div>
+          <button class="button" onclick="crearInstalacion()">+ Crear instalación</button>
+        </div>
+      </details>
+      <details class="plegable">
+        <summary>⬆ Migrar datos (solo una vez)</summary>
+        <div class="plegable-cuerpo">
+          <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:10px">
+            Copia todos los datos de edarData a la instalación seleccionada actualmente.
+            Ejecutar solo una vez por instalación.
+          </p>
+          <button class="button back-button" onclick="migrarDatosAInstalacion()">⬆ Migrar datos a esta instalación</button>
+        </div>
+      </details>
     </div>
     <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
   </div>
@@ -292,15 +315,21 @@
   </div>
 
   <!-- ── Administración: Panel de asignaciones ── -->
-  <div class="screen" id="adminAsignacionesScreen">
+    <div class="screen" id="adminAsignacionesScreen">
     <h1 class="title">📋 Panel de asignaciones</h1>
     <div class="form-container">
-      <button class="button" onclick="renderPanelAsignaciones()">🔄 Cargar trabajos pendientes</button>
-      <div id="panelAsignacionesResult" style="margin-top:12px"></div>
-      <button class="button" onclick="renderCumplimientoOperarios()" style="margin-top:10px">📊 Ver cumplimiento por operario</button>
-      <div id="cumplimientoResult" style="margin-top:12px"></div>
-      <button class="button" onclick="renderHistorialConfirmaciones()" style="margin-top:10px">📜 Ver historial de confirmaciones</button>
-      <div id="historialConfirmacionesResult" style="margin-top:12px"></div>
+      <details class="plegable" ontoggle="if (this.open) renderPanelAsignaciones()">
+        <summary>🔄 Trabajos pendientes</summary>
+        <div class="plegable-cuerpo"><div id="panelAsignacionesResult"></div></div>
+      </details>
+      <details class="plegable" ontoggle="if (this.open) renderCumplimientoOperarios()">
+        <summary>📊 Cumplimiento por operario</summary>
+        <div class="plegable-cuerpo"><div id="cumplimientoResult"></div></div>
+      </details>
+      <details class="plegable" ontoggle="if (this.open) renderHistorialConfirmaciones()">
+        <summary>📜 Historial de confirmaciones</summary>
+        <div class="plegable-cuerpo"><div id="historialConfirmacionesResult"></div></div>
+      </details>
     </div>
     <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
   </div>
@@ -321,8 +350,8 @@
       </div>
       <button class="button" onclick="enviarNotificacionAdmin()">📨 Enviar notificación</button>
       <hr style="margin:16px 0;border-color:var(--border)">
-      <h4 style="margin-bottom:8px">Notificaciones enviadas</h4>
-      <div id="notifAdminLista"></div>
+      <details class="plegable"><summary>Notificaciones enviadas</summary><div class="plegable-cuerpo">
+      <div id="notifAdminLista"></div></div></details>
     </div>
     <button class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>
   </div>

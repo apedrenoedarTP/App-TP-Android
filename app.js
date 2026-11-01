@@ -380,7 +380,7 @@ function esMantenimientoVencido(mantenimiento) {
   if (!ancla) return false;
   const d = new Date();
   const hoy = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  return calcularProximaFecha(mantenimiento).toISOString().slice(0, 10) < hoy;
+  return calcularProximaFecha(mantenimiento).toISOString().slice(0, 10) <= hoy;   // vence hoy o ya vencido: mismo criterio que el aviso de la campana
 }
 
 // Devuelve siempre un array de uids asignados, compatible con formato antiguo (string) y nuevo (array)
@@ -866,6 +866,15 @@ async function _guardarYEncolar(refPath, valor, item) {
   }
 }
 
+// Orden fijo de columnas del Excel de mantenimientos periódicos (Firebase devuelve las claves en orden alfabético)
+const _ORDEN_MANTENIMIENTO = ['FechaProgramada', 'FechaEjecucion', 'Equipo', 'Accion', 'Estado', 'ID'];
+function _ordenarFilaMantenimiento(r) {
+  r = r || {}; const o = {};
+  _ORDEN_MANTENIMIENTO.forEach(k => { o[k] = (k in r) ? r[k] : ''; });
+  Object.keys(r).forEach(k => { if (!(k in o)) o[k] = r[k]; });
+  return o;
+}
+
 // Sube al Excel de GitHub las filas indicadas (evita duplicados por ID y reintenta ante conflictos)
 async function _subirFilasGitHub(path, grupo) {
   let ultimoError;
@@ -885,6 +894,7 @@ async function _subirFilasGitHub(path, grupo) {
       if (nuevas.length) {
         rows.push(...nuevas);
         if (grupo.hoja === 'Partes') rows = rows.map(_normalizarFilaParte);
+        else if (grupo.hoja === 'Mantenimientos') rows = rows.map(_ordenarFilaMantenimiento);
         const encoded = await blobToBase64(crearExcelBlob(rows, grupo.hoja));
         await _llamarGithubExport({ action: 'put', path, content: encoded, message: grupo.mensajeGit, sha });
       }
@@ -5810,7 +5820,7 @@ function renderCentroOperativo() {
     sec('⚡ Accesos rápidos',
       `<div style="display:flex;gap:8px;flex-wrap:wrap">
         ${acceso('📅','Planificación','planificacionScreen','renderPlanificacion')}
-        ${rol === 'admin' ? acceso('🔥','Auditoría','adminScreen','renderAuditoriaActivos') : ''}
+        ${rol === 'admin' ? acceso('🔥','Auditoría','adminAuditoriaScreen','renderAuditoriaActivos') : ''}
       </div>`)
   ].join('');
 
@@ -8515,7 +8525,11 @@ function _cqMontar() {
     }
     pintar();
   }
-  window.almacenAlEntrar = function () { cargar(false); };
+  window.almacenAlEntrar = async function () {
+    const antes = cargadoEn;
+    await cargar(false);
+    if (cargadoEn === antes) { await refrescarCompras(); pintar(); }   // los artículos siguen en caché, pero el estado de compra se lee siempre fresco
+  };
   // Datos para el desplegable de Compra (usa la misma caché de 2 minutos)
   window.almacenDatos = async function () { await cargar(false); return { items: items.slice(), fam: CATS, bajo: bajoMinimo, sugerido }; };
 
@@ -8614,9 +8628,15 @@ function _cqMontar() {
     return d;
   }
 
+  // Lee de nuevo las peticiones de compra (la copia local puede estar desfasada si se borraron o cambiaron en la pantalla de Compra)
+  async function refrescarCompras() {
+    try { const sc = await realDb.ref('compra/' + INST() + '/compra').once('value'); compras = sc.val() || {}; } catch (e) { /* se conserva la copia local */ }
+  }
+
   async function pedir(a, intro) {
+    await refrescarCompras();
     const c = compraDe(a);
-    if (c && (c.e === 'solicitada' || c.e === 'aceptada')) { msg('«' + a.nombre + '» ya está en compra.', false); return; }
+    if (c && (c.e === 'solicitada' || c.e === 'aceptada')) { alert('«' + a.nombre + '» ya tiene una petición abierta en Compra (pendiente de aprobar o en la lista).'); pintar(); return; }
     if (c && c.e === 'comprada' && !confirm('«' + a.nombre + '» ya se compró el ' + fechaCorta(c.compradoEn) + '. ¿Pedir otra vez?')) return;
     const r = prompt((intro || '') + 'Cantidad a pedir de «' + a.nombre + '» (' + (a.unidad || 'ud') + '):', String(sugerido(a)));
     if (r === null) return;
@@ -8650,6 +8670,7 @@ function _cqMontar() {
   }
 
   async function pedirTodo() {
+    await refrescarCompras();
     const l = filtrados().filter(a => bajoMinimo(a) && !abierta(a));
     if (!l.length) { msg('No hay nada pendiente de pedir.', false); return; }
     const yaComprados = l.filter(a => { const c = compraDe(a); return c && c.e === 'comprada'; }).length;
@@ -8962,7 +8983,9 @@ function _cqMontar() {
     return '<div class="alm-item' + (b ? ' alm-bajo' : '') + '" data-i="' + i + '" data-j="' + j + '"><div class="alm-fila">' +
       '<div class="alm-info"><strong>' + _h(r.nombre) + '</strong><small>' + _h(eq.equipo) + (eq.modelo ? ' (' + _h(eq.modelo) + ')' : '') + ' · ' + _h(eq.familia || '') + ' › ' + _h(eq.zona || '') + '</small></div>' +
       (r.ubicacion ? '<span class="alm-ubic">📍 ' + _h(r.ubicacion) + '</span>' : '<span class="alm-ubic alm-sin">Sin ubicación</span>') +
-      '<div class="alm-cant"><span class="alm-num">' + _h(r.cantidad) + '<small>ud' + (Number(r.minimo) > 0 ? ' · mín. ' + _h(r.minimo) : '') + '</small></span></div></div>' +
+      '<div class="alm-cant">' + (adm ? '<button type="button" class="alm-btn" data-a="menos" aria-label="Restar una unidad">−</button>' : '') +
+        '<span class="alm-num"' + (adm ? ' data-a="contar" title="Toca para fijar la cantidad contada"' : '') + '>' + _h(r.cantidad) + '<small>ud' + (Number(r.minimo) > 0 ? ' · mín. ' + _h(r.minimo) : '') + '</small></span>' +
+        (adm ? '<button type="button" class="alm-btn" data-a="sumar" aria-label="Sumar una unidad">+</button>' : '') + '</div></div>' +
       '<div class="alm-nav" style="padding:0 12px 10px">' +
         (adm ? '<button type="button" class="alm-volver" data-a="ub">📍 Ubicación</button><button type="button" class="alm-volver" data-a="min">Mínimo</button>' : '') +
         (b ? '<button type="button" class="alm-volver" data-a="pedir">🛒 Pedir</button>' : '') +
@@ -8985,10 +9008,45 @@ function _cqMontar() {
   }
   const guardar = async () => { await realDb.ref('instalaciones/' + INST() + '/stock').set(window.equiposDb.equiposGuardados); guardarEquiposDb(); };
 
+  // Escribe la cantidad en todas las copias del recambio (el principal y los equipos que comparten su lista)
+  async function escribirCantidad(x, nueva) {
+    const upd = {};
+    window.equiposDb.equiposGuardados.forEach((e, k) => { if (e && e.recambios === x.eq.recambios) upd[k + '/recambios/' + x.j + '/cantidad'] = nueva; });
+    await realDb.ref('instalaciones/' + INST() + '/stock').update(upd);
+    x.r.cantidad = nueva;
+    guardarEquiposDb();
+  }
+  async function ajustar(x, delta) {
+    const antes = Number(x.r.cantidad) || 0, nuevo = Math.max(0, antes + delta);
+    if (nuevo === antes) return;
+    const estabaBajo = bajo(x.r);
+    try {
+      await escribirCantidad(x, nuevo);
+      pintar();
+      if (delta < 0 && !estabaBajo && bajo(x.r) && confirm('Queda poco de «' + x.r.nombre + '» en ' + x.eq.equipo + ' (' + x.r.cantidad + ' ud).\n¿Pedir ahora?')) accion('pedir', x);
+    } catch (e) { msg('No se pudo cambiar la cantidad: ' + e.message, false); }
+  }
+  async function contar(x) {
+    const txt = prompt('Cantidad real de «' + x.r.nombre + '» en ' + x.eq.equipo + ':', x.r.cantidad);
+    if (txt === null) return;
+    const n = Number(String(txt).replace(',', '.').trim());
+    if (String(txt).trim() === '' || !isFinite(n) || n < 0) { alert('Escribe un número igual o mayor que 0'); return; }
+    const nuevo = Math.round(n), estabaBajo = bajo(x.r);
+    if (nuevo === (Number(x.r.cantidad) || 0)) return;
+    try {
+      await escribirCantidad(x, nuevo);
+      pintar();
+      if (!estabaBajo && bajo(x.r) && confirm('Queda poco de «' + x.r.nombre + '» en ' + x.eq.equipo + ' (' + x.r.cantidad + ' ud).\n¿Pedir ahora?')) accion('pedir', x);
+    } catch (e) { msg('No se pudo guardar la cantidad: ' + e.message, false); }
+  }
+
   async function accion(a, x) {
     const { eq, i, r } = x;
     try {
-      if (a === 'ub') {
+      if (a === 'menos' || a === 'sumar' || a === 'contar') {
+        if (!(typeof puede === 'function' ? puede('equipos') : esAdmin())) return;
+        if (a === 'contar') await contar(x); else await ajustar(x, a === 'menos' ? -1 : 1);
+      } else if (a === 'ub') {
         const v = prompt('Ubicación en almacén de «' + r.nombre + '» (L3 o L3-C5; vacío = quitar):', r.ubicacion || '');
         if (v === null) return;
         const u = normUbic(v).slice(0, 30); if (u) r.ubicacion = u; else delete r.ubicacion;
@@ -9047,4 +9105,776 @@ function _cqMontar() {
     window.almacenAlEntrar = function () { if (antes) antes.apply(this, arguments); limite = PAGINA; pintar(); };
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
+})();
+
+/* Contador «por reponer» en el botón Almacén del menú: artículos del almacén + recambios de equipos bajo su mínimo */
+(function () {
+  async function contarPorReponer() {
+    const b = document.getElementById('menuAlmacenBtn'); if (!b) return;
+    try {
+      if (typeof window.almacenDatos !== 'function') return;
+      const d = await window.almacenDatos();                       // usa la caché de 2 minutos del almacén
+      let n = d.items.filter(a => d.bajo(a)).length;
+      const eqs = (window.equiposDb && window.equiposDb.equiposGuardados) || [];
+      eqs.forEach(eq => {
+        if (!eq || eq.recambiosDe) return;                         // los equipos con recambios compartidos cuentan una vez
+        (eq.recambios || []).forEach(r => {
+          if (!r || !r.nombre) return;
+          const s = Number(r.cantidad) || 0, m = Number(r.minimo) || 0;
+          if (m > 0 ? s <= m : s <= 0) n++;
+        });
+      });
+      b.textContent = '📦 Almacén' + (n ? ' (' + n + ')' : '');
+      b.title = n ? n + ' por reponer' : '';
+    } catch (e) { /* sin acceso al almacén: se deja el botón como está */ }
+  }
+  if (typeof window.showScreen === 'function') {
+    const mostrar = window.showScreen;
+    window.showScreen = function (id) {
+      const r = mostrar.apply(this, arguments);
+      if (id === 'menuScreen') setTimeout(contarPorReponer, 0);
+      return r;
+    };
+  }
+})();
+
+/* =============================================================================
+   AUDITORÍA DE ACTIVOS (v2)
+   - Los nombres se comparan sin tildes, mayúsculas ni espacios de más
+   - Correctivos de 12 meses: partes de avería ya cerrados (historial del equipo) + los abiertos
+   - Detecta mantenimientos de equipos que ya no existen (renombrados o borrados)
+   - Pantalla en secciones plegables; se ejecuta sola al entrar y muestra la hora de los datos
+============================================================================= */
+(function () {
+  const norm = s => String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const esc = s => (typeof _h === 'function' ? _h(s) : String(s == null ? '' : s));
+  const ORDEN = { rojo: 0, amarillo: 1, verde: 2 };
+  const ICONO = { rojo: '🔴', amarillo: '🟡', verde: '🟢' };
+  const TEXTO = { rojo: 'Rojo', amarillo: 'Amarillo', verde: 'Verde' };
+
+  const st = document.createElement('style');
+  st.textContent = `
+.aud-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:10px 0 14px}
+.aud-kpi{padding:12px;text-align:center;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md)}
+.aud-kpi b{display:block;font-size:1.6rem;line-height:1.2}
+.aud-kpi span{font-size:.82rem;color:var(--text-secondary)}
+.aud-kpi.aud-aviso{border-color:var(--red)}
+.aud-sec{margin-bottom:10px;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md)}
+.aud-fila{display:flex;justify-content:space-between;gap:12px;margin:0 0 6px}
+.aud-n{margin-left:auto;font-size:.9rem;padding:2px 10px;border-radius:999px;background:var(--bg-card);color:var(--text-secondary)}
+.aud-n.aud-hay{background:var(--blue-dim);color:var(--text-primary)}`;
+  document.head.appendChild(st);
+
+  function datos() {
+    const equipos = (window.equiposDb?.equiposGuardados || []).filter(e => e && e.equipo);
+    const mants   = (db.mantenimientosPeriodicos || []).filter(Boolean);
+    const averias = (db.workOrdersAverias || []).filter(Boolean);
+    const hist    = db.historialEquipos || {};
+    const hace1y  = Date.now() - 365 * 86400000;
+    const nombres = {};                                   // clave normalizada → nombre para mostrar
+    const recordar = (k, n) => { if (k && !nombres[k]) nombres[k] = String(n).trim(); };
+    equipos.forEach(e => recordar(norm(e.equipo), e.equipo));
+    const existentes = new Set(Object.keys(nombres));
+
+    // Correctivos de los últimos 12 meses: cerrados (historial del equipo) + abiertos
+    const corr = {};
+    const sumar = (mapa, nombre) => { const k = norm(nombre); if (!k) return; recordar(k, nombre); mapa[k] = (mapa[k] || 0) + 1; };
+    Object.keys(hist).forEach(nombre => {
+      const lista = Array.isArray(hist[nombre]) ? hist[nombre] : Object.values(hist[nombre] || {});
+      lista.forEach(h => {
+        if (!h || (h.tipo !== 'averia' && h.tipo !== 'correctivo')) return;
+        const t = new Date(h.fecha).getTime();
+        if (!isNaN(t) && t >= hace1y) sumar(corr, nombre);
+      });
+    });
+    averias.forEach(w => {
+      if (!w.equipo) return;
+      const t = new Date(w.fecha || w.fechaInicio || w.fechaProgramada).getTime();
+      if (isNaN(t) || t >= hace1y) sumar(corr, w.equipo);
+    });
+
+    // Mantenimientos programados por equipo
+    const porEq = {}, venc = {}, dup = {}, vistos = {}, huerfanos = {};
+    let totalVenc = 0;
+    mants.forEach(m => {
+      const k = norm(m.equipo); if (!k) return;
+      recordar(k, m.equipo);
+      porEq[k] = (porEq[k] || 0) + 1;
+      if (esMantenimientoVencido(m)) { venc[k] = (venc[k] || 0) + 1; totalVenc++; }
+      const clave = k + '|' + norm(m.accion) + '|' + m.periodicidad;
+      if (vistos[clave]) (dup[k] = dup[k] || new Set()).add(m.accion || '(sin acción)'); else vistos[clave] = 1;
+      if (m.tipo !== 'trabajo' && !existentes.has(k)) huerfanos[k] = (huerfanos[k] || 0) + 1;
+    });
+
+    const sinMant     = equipos.filter(e => !porEq[norm(e.equipo)]);
+    const incompletos = equipos.filter(e => !e.modelo || !e.familia || !e.zona);
+    const salud = equipos.map(e => {
+      const k = norm(e.equipo), c = corr[k] || 0, v = venc[k] || 0, n = dup[k] ? dup[k].size : 0;
+      const s = (v >= 3 || n > 1 || c > 5) ? 'rojo' : (v >= 1 || n >= 1 || c >= 3) ? 'amarillo' : 'verde';
+      return { e, nombre: String(e.equipo).trim(), s, c, v, d: n, m: porEq[k] || 0 };
+    }).sort((a, b) => ORDEN[a.s] - ORDEN[b.s] || b.v - a.v || b.c - a.c);
+    const top = mapa => Object.entries(mapa).map(([k, n]) => [nombres[k] || k, n]).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    return {
+      equipos, mants, salud, sinMant, incompletos, totalVenc,
+      topCorr: top(corr), topVenc: top(venc),
+      duplicados: Object.entries(dup).map(([k, set]) => [nombres[k] || k, [...set]]),
+      huerfanos: Object.entries(huerfanos).map(([k, n]) => [nombres[k] || k, n]).sort((a, b) => b[1] - a[1])
+    };
+  }
+
+  const fila  = (a, b) => `<p class="txt-secondary-sm aud-fila"><span>${esc(a)}</span>${b === undefined ? '' : `<strong>${esc(b)}</strong>`}</p>`;
+  const vacio = t => `<p class="txt-muted-sm">${t}</p>`;
+  const sec   = (titulo, n, cuerpo, abierto) =>
+    `<details class="plegable aud-sec"${abierto ? ' open' : ''}><summary>${titulo}<span class="aud-n${n ? ' aud-hay' : ''}">${n}</span></summary><div class="plegable-cuerpo">${cuerpo}</div></details>`;
+  const kpi   = (n, t, aviso) => `<div class="aud-kpi${aviso ? ' aud-aviso' : ''}"><b>${n}</b><span>${t}</span></div>`;
+
+  function render() {
+    const el = document.getElementById('auditoriaActivosResult'); if (!el) return;
+    const d = datos();
+    const cuenta = s => d.salud.filter(x => x.s === s).length;
+    const problemas = d.salud.filter(x => x.s !== 'verde');
+    const hora = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+    el.innerHTML =
+      `<p class="txt-muted-sm">Datos a las ${hora} · ${d.equipos.length} equipos · ${d.mants.length} mantenimientos programados</p>` +
+      `<div class="aud-kpis">` +
+        kpi(d.equipos.length - d.sinMant.length, 'Equipos con mantenimiento') +
+        kpi(d.sinMant.length, 'Sin mantenimiento', d.sinMant.length > 0) +
+        kpi(d.totalVenc, 'Mantenimientos vencidos', d.totalVenc > 0) +
+        kpi(cuenta('rojo'), '🔴 Críticos', cuenta('rojo') > 0) +
+        kpi(cuenta('amarillo'), '🟡 Atención') +
+        kpi(d.huerfanos.length, 'Sin equipo asociado', d.huerfanos.length > 0) +
+      `</div>` +
+      sec('🏥 Equipos que requieren atención', problemas.length,
+        problemas.length
+          ? `<p class="txt-muted-sm">C = correctivos 12 meses · V = vencidos · D = duplicados</p>` + problemas.map(x => fila(`${ICONO[x.s]} ${x.nombre}`, `C:${x.c} V:${x.v} D:${x.d}`)).join('') + vacio(`Resto: ${cuenta('verde')} equipos en verde.`)
+          : vacio('Todos los equipos en verde ✅'), problemas.length > 0) +
+      sec('⏰ Más mantenimientos vencidos', d.topVenc.length, d.topVenc.length ? d.topVenc.map(([n, c]) => fila(n, c)).join('') : vacio('Ninguno vencido ✅')) +
+      sec('🔧 Más correctivos (12 meses)', d.topCorr.length, d.topCorr.length ? d.topCorr.map(([n, c]) => fila(n, c)).join('') : vacio('Sin datos')) +
+      sec('📭 Equipos sin mantenimiento programado', d.sinMant.length,
+        d.sinMant.length ? d.sinMant.map(e => fila(e.equipo, e.zona || '')).join('') : vacio('Todos tienen mantenimiento ✅')) +
+      sec('🔗 Mantenimientos sin equipo asociado', d.huerfanos.length,
+        d.huerfanos.length
+          ? vacio('El nombre no coincide con ningún equipo (equipo renombrado o escrito distinto). Edita el mantenimiento y elige el equipo correcto.') + d.huerfanos.map(([n, c]) => fila(n, c)).join('')
+          : vacio('Todos los mantenimientos tienen equipo ✅')) +
+      sec('⚠️ Posibles duplicados', d.duplicados.length,
+        d.duplicados.length ? d.duplicados.map(([n, acc]) => fila(n, acc.join(', '))).join('') : vacio('Sin duplicados detectados ✅')) +
+      sec('📋 Equipos con datos incompletos', d.incompletos.length,
+        d.incompletos.length
+          ? d.incompletos.map(e => fila(e.equipo, 'sin ' + [!e.modelo && 'modelo', !e.familia && 'familia', !e.zona && 'zona'].filter(Boolean).join(', '))).join('')
+          : vacio('Todos completos ✅'));
+  }
+
+  function exportar() {
+    const d = datos();
+    if (!d.salud.length) { alert('No hay datos para exportar.'); return; }
+    const filas = d.salud.map(x => ({
+      Equipo: x.nombre, Estado: TEXTO[x.s], Familia: x.e.familia || '', Zona: x.e.zona || '', Modelo: x.e.modelo || '',
+      'Mantenimientos': x.m, 'Correctivos 12m': x.c, 'Vencidos': x.v, 'Duplicados': x.d
+    }));
+    _descargarLocal(crearExcelBlob(filas, 'Auditoría Activos'), `auditoria_activos_${new Date().toISOString().split('T')[0]}.xlsx`);
+  }
+
+  window.renderAuditoriaActivos = render;
+  window.exportarAuditoriaXLSX  = exportar;
+  window._auditoriaDatos        = datos;
+
+  // Al entrar en la pantalla se ejecuta sola (antes mostraba el resultado de la última vez)
+  if (typeof window.showScreen === 'function') {
+    const mostrar = window.showScreen;
+    window.showScreen = function (id) {
+      const r = mostrar.apply(this, arguments);
+      if (id === 'adminAuditoriaScreen') setTimeout(render, 0);
+      return r;
+    };
+  }
+})();
+
+/* Cuadrante, pestaña «Generar año»: las secciones largas pasan a paneles plegables.
+   Solo se reorganiza el HTML ya montado (los ids y los botones siguen donde estaban). */
+(function () {
+  function plegarGenerar() {
+    const panel = document.querySelector('#cuadranteScreen .cq-panel[data-panel="generar"]');
+    if (!panel || panel.dataset.plegado) return;
+    panel.dataset.plegado = '1';
+    let cuerpo = null, primero = true;
+    Array.from(panel.children).forEach(n => {
+      if (n.matches('h4.cq-sub')) {
+        const d = document.createElement('details'); d.className = 'plegable'; if (primero) { d.open = true; primero = false; }
+        const s = document.createElement('summary'); s.textContent = n.textContent;
+        cuerpo = document.createElement('div'); cuerpo.className = 'plegable-cuerpo';
+        d.append(s, cuerpo); panel.insertBefore(d, n); n.remove();
+      } else if (cuerpo && n.querySelector('[data-act="generar"]')) {
+        cuerpo = null;                              // el botón «Generar año» y el borrador quedan fuera de los paneles
+      } else if (cuerpo) {
+        cuerpo.appendChild(n);
+      }
+    });
+  }
+  if (typeof window.showScreen === 'function') {
+    const mostrar = window.showScreen;
+    window.showScreen = function (id) {
+      const r = mostrar.apply(this, arguments);
+      if (id === 'cuadranteScreen') setTimeout(plegarGenerar, 0);
+      return r;
+    };
+  }
+})();
+
+/* =============================================================================
+   MENÚ: «Mis gestiones» y «Compras» agrupan los botones de gestión personal y de compras.
+   Los botones originales siguen existiendo (ocultos): las fichas nuevas los pulsan por dentro,
+   así que sus permisos y su comportamiento no cambian.
+============================================================================= */
+(function () {
+  const el = id => document.getElementById(id);
+  const limpiar = t => String(t || '').replace(/^[^\p{L}\p{N}]+/u, '').trim();
+  const visible = o => !!o && o.isConnected && o.style.display !== 'none';
+  let fichaMis, fichaCompras, gridMis, gridCompras, gridMenu;
+  const enlazados = new Set();
+
+  function crearFicha(icono, etiqueta) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'menu-btn';
+    const i = document.createElement('span'); i.className = 'icon'; i.textContent = icono;
+    b._texto = document.createTextNode(' ' + etiqueta);
+    b.append(i, b._texto);
+    return b;
+  }
+  function crearPantalla(id, titulo, sub) {
+    const s = document.createElement('div'); s.className = 'screen'; s.id = id;
+    s.innerHTML = `<h1 class="title">${titulo}</h1><p class="title-sub">${sub}</p><div class="menu-grid hub-grid"></div>` +
+                  `<button type="button" class="button back-button" onclick="showScreen('menuScreen')">← Volver al menú</button>`;
+    el('menuScreen').parentNode.appendChild(s);
+    return s.querySelector('.hub-grid');
+  }
+  function actualizarHubs() {
+    const hay = g => [...g.children].some(f => f.style.display !== 'none');
+    if (fichaMis)     fichaMis.style.display     = hay(gridMis) ? '' : 'none';
+    if (fichaCompras) fichaCompras.style.display = hay(gridCompras) ? '' : 'none';
+  }
+
+  // Ficha que reproduce un botón existente: mismo texto, misma visibilidad, mismo clic
+  function enlazar(destino, icono, etiqueta, idOrigen, conTexto) {
+    const origen = el(idOrigen); if (!origen || enlazados.has(idOrigen)) return;
+    enlazados.add(idOrigen);
+    const ficha = crearFicha(icono, etiqueta); destino.appendChild(ficha);
+    const sync = () => {
+      ficha.style.display = visible(origen) ? '' : 'none';
+      if (conTexto) ficha._texto.nodeValue = ' ' + limpiar(origen.textContent);
+      actualizarHubs();
+    };
+    ficha.addEventListener('click', () => origen.click());
+    new MutationObserver(sync).observe(origen, { attributes: true, attributeFilter: ['style'], childList: true, characterData: true, subtree: true });
+    sync();
+  }
+
+  function estructura() {
+    const menu = el('menuScreen'); if (!menu || gridMenu) return false;
+    gridMis     = crearPantalla('misGestionesScreen', '👤 Mis gestiones', 'Tu horario, tus cambios y tus variables');
+    gridCompras = crearPantalla('comprasHubScreen',   '🛒 Compras',       'Peticiones y compra conjunta');
+    gridMenu = document.createElement('div'); gridMenu.className = 'menu-grid menu-grid-gestion'; gridMenu.id = 'menuGestionGrid';
+    const grupo = menu.querySelector('.menu-grupo-gestion');
+    if (grupo) grupo.insertAdjacentElement('afterend', gridMenu); else menu.appendChild(gridMenu);
+    fichaMis = crearFicha('👤', 'Mis gestiones');  fichaMis.addEventListener('click', () => showScreen('misGestionesScreen'));
+    fichaCompras = crearFicha('🛒', 'Compras');     fichaCompras.addEventListener('click', () => showScreen('comprasHubScreen'));
+    return true;
+  }
+
+  function enganchar() {
+    if (!gridMenu) return;
+    // Orden de las fichas del menú: Almacén, Centro operativo, Mis gestiones, Compras, Administración
+    enlazar(gridMenu, '📦', 'Almacén', 'menuAlmacenBtn', true);                      // el texto lleva el contador «por reponer»
+    enlazar(gridMenu, '🖥️', 'Centro operativo', 'menuCentroOperativoBtn', false);
+    if (!fichaMis.isConnected) { gridMenu.appendChild(fichaMis); gridMenu.appendChild(fichaCompras); }
+    enlazar(gridMenu, '⚙️', 'Administración', 'menuAdminBtn', false);
+    enlazar(gridMis, '📆', 'Cuadrante', 'menuCuadranteBtn', false);
+    enlazar(gridMis, '🔄', 'Cambios de turno', 'menuCambiosTurnoBtn', false);
+    enlazar(gridCompras, '🛒', 'Compra y sugerencias', 'menuCompraBtn', false);
+    enlazar(gridCompras, '🧾', 'Compra de todas las instalaciones', 'menuCompraUnificadaBtn', false);
+    actualizarHubs();
+    // «Volver» de las pantallas originales: a su pantalla intermedia, no al menú
+    const volver = (id, hub) => { const s = el(id); if (s) s.querySelectorAll('.back-button[onclick*="menuScreen"]').forEach(b => b.setAttribute('onclick', `showScreen('${hub}')`)); };
+    ['cuadranteScreen', 'cambiosTurnoScreen'].forEach(id => volver(id, 'misGestionesScreen'));
+    ['compraScreen', 'compraUnificadaScreen'].forEach(id => volver(id, 'comprasHubScreen'));
+  }
+
+  // Punto de enlace para añadir más fichas a «Mis gestiones» (lo usará el módulo de Variables)
+  window._hubMisGestiones = function (icono, etiqueta, accion) {
+    if (!gridMis) return null;
+    const f = crearFicha(icono, etiqueta); f.addEventListener('click', accion); gridMis.appendChild(f); actualizarHubs(); return f;
+  };
+
+  const arrancar = () => {
+    try { estructura(); enganchar(); setTimeout(() => { try { enganchar(); } catch (e) {} }, 1500); }   // segunda pasada por si algún módulo monta tarde
+    catch (e) { console.warn('Menú: no se pudo agrupar', e); }
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
+})();
+
+/* =============================================================================
+   VARIABLES DEL TRABAJADOR: horas normales / festivas / nocturnas, dietas, retén, turnicidad,
+   kilómetros y otros. Una hoja por mes (como la de papel), que el trabajador envía a jefatura y
+   el administrador revisa, retoca y exporta a Excel.
+   Datos: variables/{uid}/{AAAA-MM}  y  variablesConfig/conceptos (columnas, las define el administrador)
+============================================================================= */
+(function () {
+  const el  = id => document.getElementById(id);
+  const esc = s => (typeof _h === 'function' ? _h(s) : String(s == null ? '' : s));
+  const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+  const DIAS_SEM = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
+  const ESTADOS = { borrador: 'Borrador', enviado: 'Enviado a jefatura', revisado: 'Revisado', devuelto: 'Devuelto para corregir' };
+  const BASE = [
+    { id: 'desc',  nombre: 'Descripción',      tipo: 'texto' },
+    { id: 'hn',    nombre: 'Horas normales',   tipo: 'num' },
+    { id: 'hf',    nombre: 'Horas festivas',   tipo: 'num' },
+    { id: 'hnoc',  nombre: 'Horas nocturnas',  tipo: 'num' },
+    { id: 'diet',  nombre: 'Dietas',           tipo: 'num' },
+    { id: 'ret',   nombre: 'Días retén',       tipo: 'check' },
+    { id: 'tur',   nombre: 'Días turnicidad',  tipo: 'check' },
+    { id: 'km',    nombre: 'Kilómetros',       tipo: 'num' },
+    { id: 'otros', nombre: 'Otros',            tipo: 'texto' }
+  ];
+
+  const esAdmin   = () => localStorage.getItem('usuarioRol') === 'admin';
+  const miUid     = () => localStorage.getItem('usuarioUid') || '';
+  const miNombre  = () => localStorage.getItem('usuarioNombre') || 'Usuario';
+  const clave     = (a, m) => a + '-' + String(m + 1).padStart(2, '0');
+  const nDias     = (a, m) => new Date(a, m + 1, 0).getDate();
+  const kDia      = d => 'd' + String(d).padStart(2, '0');
+  const refMes    = (uid, mes) => realDb.ref('variables/' + uid + '/' + mes);
+  const fmt       = n => (Math.round(n * 100) / 100).toLocaleString('es-ES');
+  const narrow    = () => !!(window.matchMedia && window.matchMedia('(max-width: 760px)').matches);
+
+  let conceptosCache = null;
+  const hoy = new Date();
+  const S = { a: hoy.getFullYear(), m: hoy.getMonth(), uid: '', nombre: '', datos: { dias: {} }, dia: hoy.getDate(), volver: 'misGestionesScreen', admin: false };
+  let pendientes = {}, temporizador = null, cargaId = 0;
+
+  /* ---------- conceptos (columnas) ---------- */
+  async function conceptos(forzar) {
+    if (conceptosCache && !forzar) return conceptosCache;
+    let lista = null;
+    try { const v = (await realDb.ref('variablesConfig/conceptos').once('value')).val(); lista = Array.isArray(v) ? v.filter(Boolean) : (v ? Object.values(v) : null); } catch (e) { /* sin config: se usan los de base */ }
+    conceptosCache = (lista && lista.length) ? lista : BASE.map(c => ({ ...c }));
+    return conceptosCache;
+  }
+  const activos = () => (conceptosCache || BASE).filter(c => c.activo !== false);
+
+  /* ---------- carga y cálculo ---------- */
+  function normalizar(d) {
+    d = d || {}; d.dias = d.dias || {};
+    Object.keys(d.dias).forEach(k => { if (!d.dias[k]) delete d.dias[k]; });
+    return d;
+  }
+  async function cargarMes(uid, a, m) {
+    const v = (await refMes(uid, clave(a, m)).once('value')).val();
+    return normalizar(v);
+  }
+  function totales(datos, cols) {
+    const t = {};
+    cols.forEach(c => {
+      if (c.tipo === 'texto') return;
+      t[c.id] = Object.values(datos.dias || {}).reduce((s, dia) => s + (c.tipo === 'check' ? (dia[c.id] ? 1 : 0) : (Number(dia[c.id]) || 0)), 0);
+    });
+    return t;
+  }
+  const soloLectura = () => !S.admin && (S.datos.estado === 'enviado' || S.datos.estado === 'revisado');
+
+  /* ---------- guardado ---------- */
+  function programarGuardado() { estadoGuardado('Guardando…'); clearTimeout(temporizador); temporizador = setTimeout(guardar, 700); }
+  function estadoGuardado(t) { const e = el('vrGuardado'); if (e) e.textContent = t; }
+  async function guardar() {
+    const cambios = pendientes; pendientes = {};
+    if (!Object.keys(cambios).length) return;
+    const upd = { ...cambios, actualizado: Date.now() };
+    if (!S.datos.estado) { upd.estado = 'borrador'; S.datos.estado = 'borrador'; }
+    try { await refMes(S.uid, clave(S.a, S.m)).update(upd); estadoGuardado('Guardado ✓'); }
+    catch (e) { Object.assign(pendientes, cambios); estadoGuardado('⚠ No se pudo guardar'); console.warn('Variables:', e); }
+  }
+  function valorDe(c, bruto) {
+    if (c.tipo === 'check') return bruto ? true : null;
+    if (c.tipo === 'num') { const s = String(bruto).trim().replace(',', '.'); if (s === '') return null; const n = Number(s); return isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null; }
+    const s = String(bruto).trim().slice(0, 120); return s === '' ? null : s;
+  }
+  function poner(dia, c, bruto) {
+    if (soloLectura()) return;
+    const v = valorDe(c, bruto), k = kDia(dia);
+    S.datos.dias[k] = S.datos.dias[k] || {};
+    if (v === null) delete S.datos.dias[k][c.id]; else S.datos.dias[k][c.id] = v;
+    if (!Object.keys(S.datos.dias[k]).length) delete S.datos.dias[k];
+    pendientes['dias/' + k + '/' + c.id] = v;
+    programarGuardado(); pintarTotales();
+  }
+
+  /* ---------- pantalla del trabajador (y del administrador revisando) ---------- */
+  function css() {
+    if (el('vrStyles')) return;
+    const st = document.createElement('style'); st.id = 'vrStyles';
+    st.textContent = `
+#variablesScreen, #variablesAdminScreen { max-width: 1100px; }
+.vr-barra { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 12px; }
+.vr-mes { display: flex; align-items: center; gap: 6px; }
+.vr-mes b { min-width: 150px; text-align: center; font-size: 1.1rem; }
+.vr-flecha { min-width: 44px; min-height: 44px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text-primary); cursor: pointer; font-size: 1.2rem; }
+.vr-chip { padding: 3px 12px; border-radius: 999px; font-size: .8rem; font-weight: 700; background: var(--bg-card); border: 1px solid var(--border); color: var(--text-secondary); }
+.vr-chip.vr-enviado { border-color: #b7791f; color: #f0a500; } .vr-chip.vr-revisado { border-color: #2e7d32; color: #4caf50; } .vr-chip.vr-devuelto { border-color: var(--red); color: var(--red); }
+.vr-guardado { font-size: .82rem; color: var(--text-muted); margin-left: auto; }
+.vr-resumen { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 0 0 14px; }
+.vr-kpi { padding: 8px 10px; text-align: center; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.vr-kpi b { display: block; font-size: 1.25rem; } .vr-kpi span { font-size: .75rem; color: var(--text-secondary); }
+.vr-aviso { padding: 10px 12px; margin: 0 0 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-surface); font-size: .88rem; color: var(--text-secondary); }
+.vr-tabla { width: 100%; border-collapse: collapse; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.vr-tabla th, .vr-tabla td { padding: 4px 6px; border-bottom: 1px solid var(--border); text-align: center; font-size: .85rem; }
+.vr-tabla thead th { background: var(--bg-surface); font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; color: var(--text-secondary); }
+.vr-tabla .vr-dia { text-align: left; white-space: nowrap; width: 64px; } .vr-tabla .vr-dia small { color: var(--text-muted); margin-left: 4px; }
+.vr-tabla tr.vr-finde td, .vr-tabla tr.vr-finde th.vr-dia { background: rgba(255,255,255,.04); }
+.vr-tabla input[type=number], .vr-tabla input[type=text] { width: 100%; min-width: 54px; box-sizing: border-box; min-height: 34px; padding: 2px 6px; }
+.vr-tabla input[type=text] { min-width: 150px; text-align: left; }
+.vr-tabla input[type=checkbox] { width: 20px; height: 20px; }
+.vr-tabla tfoot th { background: var(--bg-surface); font-weight: 700; }
+.vr-wrap { overflow-x: auto; }
+.vr-chips { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0 10px; }
+.vr-chipdia { flex: 0 0 auto; min-width: 42px; min-height: 42px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text-primary); cursor: pointer; line-height: 1.1; }
+.vr-chipdia small { display: block; font-size: .65rem; color: var(--text-muted); } .vr-chipdia.vr-fin { background: rgba(255,255,255,.05); }
+.vr-chipdia.vr-sel { border-color: var(--blue-dim); background: var(--blue-glow); } .vr-chipdia.vr-lleno { box-shadow: inset 0 -3px 0 var(--green); }
+.vr-dia-card { padding: 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); margin: 0 0 12px; }
+.vr-dia-card h3 { margin: 0 0 10px; } .vr-campos { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+.vr-campos .vr-ancho { grid-column: 1 / -1; } .vr-campos label { display: block; font-size: .8rem; color: var(--text-secondary); margin: 0 0 3px; }
+.vr-campos input[type=number], .vr-campos input[type=text] { width: 100%; box-sizing: border-box; min-height: 42px; }
+.vr-campos .vr-check { display: flex; align-items: center; gap: 8px; min-height: 42px; font-size: .95rem; color: var(--text-primary); }
+.vr-campos .vr-check input { width: 22px; height: 22px; }
+.vr-acciones { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; }
+.vr-fila { display: flex; align-items: center; gap: 10px; padding: 10px; margin: 0 0 8px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); flex-wrap: wrap; }
+.vr-fila .vr-nom { flex: 1 1 160px; font-weight: 600; } .vr-fila .vr-tot { flex: 2 1 260px; font-size: .8rem; color: var(--text-secondary); }
+.vr-conc { display: flex; gap: 8px; align-items: center; margin: 0 0 6px; flex-wrap: wrap; } .vr-conc input[type=text] { flex: 1 1 160px; min-height: 38px; }
+.vr-conc .vr-tipo { font-size: .75rem; color: var(--text-muted); min-width: 52px; }
+@media (max-width: 760px) { .vr-mes b { min-width: 120px; } .vr-guardado { width: 100%; margin-left: 0; } }`;
+    document.head.appendChild(st);
+  }
+
+  function crearPantallas() {
+    if (el('variablesScreen')) return;
+    const menu = el('menuScreen'); if (!menu) return;
+    const mk = (id, html) => { const s = document.createElement('div'); s.className = 'screen'; s.id = id; s.innerHTML = html; menu.parentNode.appendChild(s); return s; };
+    const sc = mk('variablesScreen', `<h1 class="title">📝 Variables</h1><p class="title-sub" id="vrSub"></p><div id="vrCont"></div><button type="button" class="button back-button" id="vrVolver">← Volver</button>`);
+    sc.addEventListener('click', clic); sc.addEventListener('input', cambio); sc.addEventListener('change', cambio);
+    el('vrVolver').addEventListener('click', () => { guardar(); showScreen(S.volver); if (S.volver === 'variablesAdminScreen') pintarAdmin(); });
+    const ad = mk('variablesAdminScreen', `<h1 class="title">📝 Variables del mes</h1><p class="title-sub">Revisión por administración</p><div id="vaCont"></div><button type="button" class="button back-button" onclick="showScreen('adminScreen')">← Volver a Administración</button>`);
+    ad.addEventListener('click', clicAdmin); ad.addEventListener('change', cambioAdmin);
+  }
+
+  async function abrir(uid, nombre, volver, esRev) {
+    css(); crearPantallas();
+    clearTimeout(temporizador); await guardar();
+    Object.assign(S, { uid, nombre, volver, admin: esAdmin() && !!esRev });
+    el('vrSub').textContent = esRev ? 'Hoja de ' + nombre + ' (revisión)' : 'Tu hoja del mes: se guarda sola y la envías a jefatura a final de mes';
+    showScreen('variablesScreen');
+    await cargarYPintar();
+  }
+  const abrirMio = () => abrir(miUid(), miNombre(), 'misGestionesScreen', false);
+
+  async function cargarYPintar() {
+    const id = ++cargaId, c = el('vrCont');
+    c.innerHTML = '<p class="txt-muted-sm">Cargando…</p>';
+    try {
+      await conceptos();
+      const datos = await cargarMes(S.uid, S.a, S.m);
+      if (id !== cargaId) return;
+      S.datos = datos; pendientes = {};
+      const n = nDias(S.a, S.m);
+      if (!(S.a === hoy.getFullYear() && S.m === hoy.getMonth())) S.dia = 1; else S.dia = Math.min(S.dia || hoy.getDate(), n);
+      pintar();
+    } catch (e) { c.innerHTML = '<p class="txt-muted-sm">No se pudo cargar la hoja. Comprueba la conexión e inténtalo de nuevo.</p>'; console.warn('Variables:', e); }
+  }
+
+  function celdaTabla(c, k, v, ro) {
+    const dis = ro ? ' disabled' : '';
+    if (c.tipo === 'check') return `<input type="checkbox" data-d="${k}" data-c="${esc(c.id)}"${v ? ' checked' : ''}${dis} aria-label="${esc(c.nombre)}">`;
+    if (c.tipo === 'num')   return `<input type="number" inputmode="decimal" step="0.25" min="0" data-d="${k}" data-c="${esc(c.id)}" value="${v == null ? '' : esc(v)}"${dis} aria-label="${esc(c.nombre)}">`;
+    return `<input type="text" maxlength="120" data-d="${k}" data-c="${esc(c.id)}" value="${v == null ? '' : esc(v)}"${dis} aria-label="${esc(c.nombre)}">`;
+  }
+  function vistaTabla(cols, ro) {
+    const n = nDias(S.a, S.m);
+    const filas = Array.from({ length: n }, (_, i) => {
+      const d = i + 1, k = kDia(d), dow = new Date(S.a, S.m, d).getDay(), dia = S.datos.dias[k] || {};
+      return `<tr class="${dow === 0 || dow === 6 ? 'vr-finde' : ''}"><th class="vr-dia" scope="row">${d}<small>${DIAS_SEM[dow]}</small></th>${cols.map(c => `<td>${celdaTabla(c, k, dia[c.id], ro)}</td>`).join('')}</tr>`;
+    }).join('');
+    return `<div class="vr-wrap"><table class="vr-tabla"><thead><tr><th>Día</th>${cols.map(c => `<th>${esc(c.nombre)}</th>`).join('')}</tr></thead><tbody>${filas}</tbody>` +
+           `<tfoot><tr><th>Total</th>${cols.map(c => `<th data-tot="${esc(c.id)}"></th>`).join('')}</tr></tfoot></table></div>`;
+  }
+  function vistaDia(cols, ro) {
+    const n = nDias(S.a, S.m), d = S.dia, k = kDia(d), dia = S.datos.dias[k] || {}, dow = new Date(S.a, S.m, d).getDay();
+    const chips = Array.from({ length: n }, (_, i) => {
+      const x = i + 1, w = new Date(S.a, S.m, x).getDay();
+      return `<button type="button" class="vr-chipdia${w === 0 || w === 6 ? ' vr-fin' : ''}${x === d ? ' vr-sel' : ''}${S.datos.dias[kDia(x)] ? ' vr-lleno' : ''}" data-ir="${x}">${x}<small>${DIAS_SEM[w]}</small></button>`;
+    }).join('');
+    const campos = cols.map(c => {
+      const v = dia[c.id], dis = ro ? ' disabled' : '';
+      if (c.tipo === 'check') return `<div class="vr-check"><input type="checkbox" id="vrc_${esc(c.id)}" data-d="${k}" data-c="${esc(c.id)}"${v ? ' checked' : ''}${dis}><label for="vrc_${esc(c.id)}" style="margin:0;font-size:.95rem;color:var(--text-primary)">${esc(c.nombre)}</label></div>`;
+      const ancho = c.tipo === 'texto' ? ' vr-ancho' : '';
+      return `<div class="${ancho.trim()}"><label>${esc(c.nombre)}</label>${celdaTabla(c, k, v, ro)}</div>`;
+    }).join('');
+    return `<div class="vr-chips">${chips}</div><div class="vr-dia-card"><h3>${d} de ${MESES[S.m]} · ${['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'][dow]}</h3><div class="vr-campos">${campos}</div></div>`;
+  }
+
+  function pintar() {
+    const c = el('vrCont'); if (!c) return;
+    const cols = activos(), ro = soloLectura(), est = S.datos.estado || 'borrador';
+    const aviso = ro
+      ? `<div class="vr-aviso">${est === 'revisado' ? 'Esta hoja ya ha sido revisada por administración.' : 'Hoja enviada a jefatura el ' + (S.datos.enviadoEn ? new Date(S.datos.enviadoEn).toLocaleDateString('es-ES') : '—') + '. Si necesitas corregir algo, pide a administración que la devuelva.'}</div>`
+      : (est === 'devuelto' ? '<div class="vr-aviso">Administración te ha devuelto la hoja para que la corrijas. Cuando esté, vuelve a enviarla.</div>' : '');
+    const acciones = S.admin
+      ? `<div class="vr-acciones"><button type="button" class="button" data-act="revisado">✔ Marcar como revisada</button><button type="button" class="button back-button" data-act="devolver">↩ Devolver al trabajador</button><button type="button" class="button back-button" data-act="excel">⬇ Excel de esta hoja</button></div>`
+      : (!ro ? `<div class="vr-acciones"><button type="button" class="button" data-act="enviar">📤 Enviar a jefatura</button></div>` : '');
+    c.innerHTML =
+      `<div class="vr-barra"><div class="vr-mes"><button type="button" class="vr-flecha" data-mes="-1" aria-label="Mes anterior">‹</button><b>${MESES[S.m]} ${S.a}</b><button type="button" class="vr-flecha" data-mes="1" aria-label="Mes siguiente">›</button></div>` +
+      `<span class="vr-chip vr-${est}">${ESTADOS[est] || est}</span><span class="vr-guardado" id="vrGuardado"></span></div>` +
+      aviso + `<div class="vr-resumen" id="vrResumen"></div>` + (narrow() ? vistaDia(cols, ro) : vistaTabla(cols, ro)) + acciones;
+    pintarTotales();
+  }
+  function pintarTotales() {
+    const cols = activos(), t = totales(S.datos, cols), r = el('vrResumen'); if (!r) return;
+    r.innerHTML = cols.filter(c => c.tipo !== 'texto').map(c => `<div class="vr-kpi"><b>${fmt(t[c.id] || 0)}</b><span>${esc(c.nombre)}</span></div>`).join('');
+    document.querySelectorAll('#vrCont [data-tot]').forEach(th => { const c = cols.find(x => x.id === th.dataset.tot); th.textContent = c && c.tipo !== 'texto' ? fmt(t[c.id] || 0) : ''; });
+  }
+
+  function cambio(e) {
+    const i = e.target; if (!i.dataset || !i.dataset.c) return;
+    const c = activos().find(x => x.id === i.dataset.c); if (!c) return;
+    poner(parseInt(String(i.dataset.d).replace(/\D/g, ''), 10), c, c.tipo === 'check' ? i.checked : i.value);
+  }
+  async function clic(e) {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.mes) { clearTimeout(temporizador); await guardar(); const m = S.m + Number(b.dataset.mes); S.a += Math.floor(m / 12); S.m = ((m % 12) + 12) % 12; await cargarYPintar(); return; }
+    if (b.dataset.ir) { S.dia = Number(b.dataset.ir); pintar(); return; }
+    const act = b.dataset.act; if (!act) return;
+    clearTimeout(temporizador); await guardar();
+    const mes = clave(S.a, S.m), ahora = Date.now();
+    try {
+      if (act === 'enviar') {
+        if (!confirm('¿Enviar la hoja de ' + MESES[S.m] + ' ' + S.a + ' a jefatura?\nDespués no podrás modificarla salvo que administración la devuelva.')) return;
+        await refMes(S.uid, mes).update({ estado: 'enviado', enviadoEn: ahora, actualizado: ahora }); S.datos.estado = 'enviado'; S.datos.enviadoEn = ahora;
+      } else if (act === 'revisado') {
+        await refMes(S.uid, mes).update({ estado: 'revisado', revisadoEn: ahora, actualizado: ahora }); S.datos.estado = 'revisado';
+      } else if (act === 'devolver') {
+        if (!confirm('¿Devolver la hoja a ' + S.nombre + ' para que la corrija?')) return;
+        await refMes(S.uid, mes).update({ estado: 'devuelto', actualizado: ahora }); S.datos.estado = 'devuelto';
+      } else if (act === 'excel') { await conceptos(); descargar(libroDe([{ nombre: S.nombre, datos: S.datos }]), 'variables_' + S.nombre + '_' + mes + '.xlsx'); return; }
+      await realDb.ref('variablesIdx/' + mes + '/' + S.uid).set({ estado: S.datos.estado, nombre: S.nombre, ts: ahora }).catch(() => {});
+      pintar();
+    } catch (err) { alert('No se pudo completar la acción: ' + err.message); }
+  }
+
+  /* ---------- exportación a Excel (misma disposición que la hoja de papel) ---------- */
+  function hojaDe(nombre, datos, cols) {
+    const n = nDias(S.a, S.m), t = totales(datos, cols);
+    const aoa = [['TRABAJADOR', nombre, '', 'MES', MESES[S.m] + ' ' + S.a], [], ['DIA', ...cols.map(c => c.nombre.toUpperCase())]];
+    for (let d = 1; d <= n; d++) {
+      const dia = (datos.dias || {})[kDia(d)] || {};
+      aoa.push([d, ...cols.map(c => c.tipo === 'check' ? (dia[c.id] ? 'X' : '') : (dia[c.id] == null ? '' : dia[c.id]))]);
+    }
+    aoa.push(['TOTAL', ...cols.map(c => c.tipo === 'texto' ? '' : (t[c.id] || 0))]);
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 8 }, ...cols.map(c => ({ wch: c.tipo === 'texto' ? 28 : 16 }))];
+    return ws;
+  }
+  function libroDe(filas) {
+    const cols = activos(), wb = XLSX.utils.book_new(), usados = new Set();
+    if (filas.length > 1) {
+      const resumen = [['TRABAJADOR', 'ESTADO', ...cols.filter(c => c.tipo !== 'texto').map(c => c.nombre.toUpperCase())]];
+      filas.forEach(f => { const t = totales(f.datos, cols); resumen.push([f.nombre, ESTADOS[f.datos.estado] || 'Sin datos', ...cols.filter(c => c.tipo !== 'texto').map(c => t[c.id] || 0)]); });
+      const wr = XLSX.utils.aoa_to_sheet(resumen); wr['!cols'] = [{ wch: 28 }, { wch: 22 }, ...cols.map(() => ({ wch: 16 }))];
+      XLSX.utils.book_append_sheet(wb, wr, 'RESUMEN'); usados.add('RESUMEN');
+    }
+    filas.forEach(f => {
+      let nom = String(f.nombre).replace(/[\\/?*\[\]:]/g, ' ').slice(0, 28) || 'Hoja', x = nom, i = 2;
+      while (usados.has(x.toUpperCase())) x = nom.slice(0, 26) + ' ' + i++;
+      usados.add(x.toUpperCase());
+      XLSX.utils.book_append_sheet(wb, hojaDe(f.nombre, f.datos, cols), x);
+    });
+    return wb;
+  }
+  function descargar(wb, nombre) {
+    const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    _descargarLocal(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), nombre);
+  }
+
+  /* ---------- administración: listado del mes, revisión y conceptos ---------- */
+  let listado = [];
+  async function pintarAdmin() {
+    css(); crearPantallas();
+    const c = el('vaCont'); if (!c) return;
+    c.innerHTML = '<p class="txt-muted-sm">Cargando…</p>';
+    try {
+      await conceptos();
+      const us = (await realDb.ref('usuarios').once('value')).val() || {};
+      const activosU = Object.entries(us).filter(([, u]) => u && u.estado === 'activo').map(([uid, u]) => ({ uid, nombre: u.nombre || u.email || uid })).sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+      listado = await Promise.all(activosU.map(async u => ({ ...u, datos: await cargarMes(u.uid, S.a, S.m).catch(() => normalizar(null)) })));
+      const cols = activos();
+      const filas = listado.map((f, i) => {
+        const t = totales(f.datos, cols), est = f.datos.estado || '', tiene = Object.keys(f.datos.dias).length > 0;
+        const resumen = tiene ? cols.filter(x => x.tipo !== 'texto' && t[x.id]).map(x => esc(x.nombre) + ': <b>' + fmt(t[x.id]) + '</b>').join(' · ') : 'Sin datos';
+        return `<div class="vr-fila"><span class="vr-nom">${esc(f.nombre)}</span><span class="vr-chip ${est ? 'vr-' + est : ''}">${est ? ESTADOS[est] : 'Sin empezar'}</span><span class="vr-tot">${resumen || 'Sin importes'}</span><button type="button" class="button" data-abrir="${i}">Abrir</button></div>`;
+      }).join('') || '<p class="txt-muted-sm">No hay usuarios activos.</p>';
+      c.innerHTML =
+        `<div class="vr-barra"><div class="vr-mes"><button type="button" class="vr-flecha" data-mes="-1" aria-label="Mes anterior">‹</button><b>${MESES[S.m]} ${S.a}</b><button type="button" class="vr-flecha" data-mes="1" aria-label="Mes siguiente">›</button></div>` +
+        `<button type="button" class="button" data-act="todo">⬇ Excel del mes (todos)</button></div>` + filas +
+        `<details class="plegable" style="margin-top:14px"><summary>⚙️ Conceptos (columnas de la hoja)</summary><div class="plegable-cuerpo" id="vaConceptos"></div></details>`;
+      pintarConceptos();
+    } catch (e) { c.innerHTML = '<p class="txt-muted-sm">No se pudo cargar el listado.</p>'; console.warn('Variables:', e); }
+  }
+  async function abrirAdmin() { if (!esAdmin()) return; showScreen('variablesAdminScreen'); await pintarAdmin(); }
+  async function clicAdmin(e) {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.mes) { const m = S.m + Number(b.dataset.mes); S.a += Math.floor(m / 12); S.m = ((m % 12) + 12) % 12; await pintarAdmin(); return; }
+    if (b.dataset.abrir) { const f = listado[Number(b.dataset.abrir)]; if (f) abrir(f.uid, f.nombre, 'variablesAdminScreen', true); return; }
+    if (b.dataset.act === 'todo') { const con = listado.filter(f => Object.keys(f.datos.dias).length); if (!con.length) { alert('Todavía no hay datos de este mes.'); return; } descargar(libroDe(con.map(f => ({ nombre: f.nombre, datos: f.datos }))), 'variables_' + clave(S.a, S.m) + '.xlsx'); return; }
+    if (b.dataset.cmov) { moverConcepto(Number(b.dataset.cmov), Number(b.dataset.dir)); return; }
+    if (b.dataset.cadd) { anadirConcepto(); return; }
+    if (b.dataset.cdel) { quitarConcepto(Number(b.dataset.cdel)); return; }
+    if (b.dataset.cguardar) { await guardarConceptos(); return; }
+  }
+  function cambioAdmin(e) {
+    const i = e.target, k = i.dataset && i.dataset.cidx; if (k === undefined) return;
+    const c = (conceptosCache || [])[Number(k)]; if (!c) return;
+    if (i.dataset.cn !== undefined) c.nombre = i.value.trim().slice(0, 40) || c.nombre;
+    if (i.dataset.ca !== undefined) c.activo = i.checked;
+  }
+  function pintarConceptos() {
+    const h = el('vaConceptos'); if (!h) return;
+    const lista = conceptosCache || BASE;
+    h.innerHTML = '<p class="txt-muted-sm">Cambia el nombre, el orden o desactiva una columna. Las columnas desactivadas no se muestran, pero sus datos se conservan.</p>' +
+      lista.map((c, i) => `<div class="vr-conc"><button type="button" class="vr-flecha" style="min-width:38px;min-height:38px" data-cmov="${i}" data-dir="-1" aria-label="Subir">↑</button><button type="button" class="vr-flecha" style="min-width:38px;min-height:38px" data-cmov="${i}" data-dir="1" aria-label="Bajar">↓</button>` +
+        `<input type="text" maxlength="40" value="${esc(c.nombre)}" data-cidx="${i}" data-cn><span class="vr-tipo">${c.tipo === 'num' ? 'número' : c.tipo === 'check' ? 'casilla' : 'texto'}</span>` +
+        `<label class="vr-chkl" style="display:flex;gap:4px;align-items:center;font-size:.85rem"><input type="checkbox" data-cidx="${i}" data-ca${c.activo === false ? '' : ' checked'}> Activa</label>` +
+        (BASE.some(b => b.id === c.id) ? '' : `<button type="button" class="vr-flecha" style="min-width:38px;min-height:38px" data-cdel="${i}" aria-label="Quitar">🗑</button>`) + '</div>').join('') +
+      '<div class="vr-acciones"><button type="button" class="button back-button" data-cadd="1">+ Añadir concepto</button><button type="button" class="button" data-cguardar="1">Guardar conceptos</button></div>';
+  }
+  function moverConcepto(i, dir) { const l = conceptosCache; const j = i + dir; if (!l || j < 0 || j >= l.length) return; [l[i], l[j]] = [l[j], l[i]]; pintarConceptos(); }
+  function anadirConcepto() {
+    const nombre = (prompt('Nombre del nuevo concepto (por ejemplo, «Pluses»):') || '').trim().slice(0, 40); if (!nombre) return;
+    const t = (prompt('Tipo: 1 = número · 2 = casilla (X) · 3 = texto', '1') || '').trim();
+    const tipo = t === '2' ? 'check' : t === '3' ? 'texto' : 'num';
+    (conceptosCache = conceptosCache || BASE.map(c => ({ ...c }))).push({ id: 'c' + Date.now().toString(36), nombre, tipo }); pintarConceptos();
+  }
+  function quitarConcepto(i) { if (conceptosCache && !BASE.some(b => b.id === conceptosCache[i].id) && confirm('¿Quitar «' + conceptosCache[i].nombre + '»? Sus datos ya escritos se conservan en la base de datos, pero dejarán de verse.')) { conceptosCache.splice(i, 1); pintarConceptos(); } }
+  async function guardarConceptos() {
+    try { await realDb.ref('variablesConfig/conceptos').set(conceptosCache.map(c => ({ id: c.id, nombre: c.nombre, tipo: c.tipo, activo: c.activo !== false }))); alert('Conceptos guardados.'); await pintarAdmin(); }
+    catch (e) { alert('No se pudo guardar: ' + e.message); }
+  }
+
+  /* ---------- fichas de acceso ---------- */
+  function fichaMisGestiones(n) {
+    const f = typeof window._hubMisGestiones === 'function' ? window._hubMisGestiones('📝', 'Variables', abrirMio) : null;
+    if (!f && n < 10) setTimeout(() => fichaMisGestiones(n + 1), 400);
+  }
+  function fichaAdmin() {
+    const g = document.querySelector('#adminScreen .menu-grid'); if (!g || el('variablesAdminBtn')) return;
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'menu-btn'; b.id = 'variablesAdminBtn';
+    b.innerHTML = '<span class="icon">📝</span> Variables'; b.addEventListener('click', abrirAdmin); g.appendChild(b);
+  }
+  window._variables = { abrirMio, abrirAdmin, _totales: totales, _libroDe: libroDe };
+  const arrancar = () => { try { css(); crearPantallas(); fichaAdmin(); fichaMisGestiones(0); } catch (e) { console.warn('Variables: no se pudo montar', e); } };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
+})();
+
+/* =============================================================================
+   VARIABLES · AVISOS
+   - Administrador: nº de hojas «enviadas» pendientes de revisar (mes actual y anterior), en el menú y en Administración.
+   - Trabajador: en los últimos 5 días del mes y en los 3 primeros del siguiente, si su hoja está sin enviar.
+   Lectura mínima: variablesIdx/{mes} (unos bytes) o su propio estado del mes, solo al abrir el menú.
+============================================================================= */
+(function () {
+  const clave = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  const rol = () => localStorage.getItem('usuarioRol');
+  const botones = sel => [...document.querySelectorAll(sel)];
+  const poner = (b, texto) => { if (!b) return; if (b._texto) b._texto.nodeValue = ' ' + texto; else if (b.lastChild) b.lastChild.nodeValue = ' ' + texto; };
+  const fichaPorTexto = (sel, t) => botones(sel).find(b => (b.textContent || '').includes(t));
+
+  async function pendientesAdmin() {
+    try {
+      const hoy = new Date(), meses = [clave(hoy), clave(new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1))];
+      const snaps = await Promise.all(meses.map(m => realDb.ref('variablesIdx/' + m).once('value')));
+      return snaps.reduce((n, s) => n + Object.values(s.val() || {}).filter(x => x && x.estado === 'enviado').length, 0);
+    } catch (e) { return 0; }
+  }
+  async function sinEnviar() {
+    try {
+      const hoy = new Date(), dia = hoy.getDate(), ultimo = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).getDate();
+      const objetivo = dia >= ultimo - 4 ? hoy : (dia <= 3 ? new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1) : null);
+      const uid = localStorage.getItem('usuarioUid'); if (!objetivo || !uid) return false;
+      const e = (await realDb.ref('variables/' + uid + '/' + clave(objetivo) + '/estado').once('value')).val();
+      return e === 'borrador' || e === 'devuelto';            // solo si ya la ha empezado (o se la han devuelto)
+    } catch (e) { return false; }
+  }
+
+  async function actualizar() {
+    const adminTile = fichaPorTexto('#menuGestionGrid .menu-btn', 'Administración');
+    if (rol() === 'admin') {
+      const n = await pendientesAdmin();
+      poner(adminTile, 'Administración' + (n ? ' (' + n + ')' : ''));
+      poner(document.getElementById('variablesAdminBtn'), 'Variables' + (n ? ' (' + n + ' por revisar)' : ''));
+    } else poner(adminTile, 'Administración');
+    const aviso = await sinEnviar();
+    poner(fichaPorTexto('#menuGestionGrid .menu-btn', 'Mis gestiones'), 'Mis gestiones' + (aviso ? ' ⚠' : ''));
+    poner(fichaPorTexto('#misGestionesScreen .menu-btn', 'Variables'), 'Variables' + (aviso ? ' ⚠ sin enviar' : ''));
+  }
+
+  if (typeof window.showScreen === 'function') {
+    const mostrar = window.showScreen;
+    window.showScreen = function (id) {
+      const r = mostrar.apply(this, arguments);
+      if (id === 'menuScreen' || id === 'misGestionesScreen' || id === 'adminScreen') setTimeout(actualizar, 300);
+      return r;
+    };
+  }
+})();
+
+/* =============================================================================
+   Cambios de turno y Planificación: las secciones largas pasan a paneles plegables.
+   Recuerdan qué paneles tenías abiertos aunque la pantalla se vuelva a pintar.
+============================================================================= */
+(function () {
+  const clave = t => String(t).replace(/\s*\(\d+\)\s*$/, '').trim();
+  function crear(titulo, abierto) {
+    const d = document.createElement('details'); d.className = 'plegable'; d.dataset.t = titulo; d.open = !!abierto;
+    const s = document.createElement('summary'); s.textContent = titulo;
+    const c = document.createElement('div'); c.className = 'plegable-cuerpo'; d.append(s, c);
+    return [d, c];
+  }
+  function observar(idHost, transformar) {
+    const host = document.getElementById(idHost); if (!host || host._plg) return; host._plg = true;
+    const memoria = new Map();
+    const abrirPor = (titulo, defecto) => (memoria.has(clave(titulo)) ? memoria.get(clave(titulo)) : defecto);
+    const obs = new MutationObserver(() => { obs.disconnect(); try { transformar(host, abrirPor); } finally { obs.observe(host, { childList: true }); } });
+    host.addEventListener('toggle', e => { const d = e.target; if (d.matches && d.matches('details.plegable') && d.dataset.t) memoria.set(clave(d.dataset.t), d.open); }, true);
+    obs.observe(host, { childList: true });
+    transformar(host, abrirPor);
+  }
+  // Cambios de turno: cada título .ct-sec con las filas que le siguen
+  function porTitulos(host, abrirPor) {
+    const hijos = Array.from(host.children);
+    if (!hijos.some(n => n.classList.contains('ct-sec'))) return;
+    let cuerpo = null;
+    hijos.forEach(n => {
+      if (n.classList.contains('ct-sec')) {
+        const t = n.textContent.trim(), m = /\((\d+)\)/.exec(t);
+        const [d, c] = crear(t, abrirPor(t, /^Pedir/.test(t) || (m && Number(m[1]) > 0)));
+        host.insertBefore(d, n); n.remove(); cuerpo = c;
+      } else if (cuerpo) cuerpo.appendChild(n);
+    });
+  }
+  // Planificación: cada .panel-sec (título + filas)
+  function porSecciones(host, abrirPor) {
+    Array.from(host.children).forEach(sec => {
+      if (!sec.classList.contains('panel-sec')) return;
+      const tit = sec.querySelector(':scope > p'); if (!tit) return;
+      const t = tit.textContent.trim(), filas = sec.querySelectorAll('p').length - 1;
+      const [d, c] = crear(t, abrirPor(t, /vencid/i.test(t) && filas > 0));
+      tit.remove(); while (sec.firstChild) c.appendChild(sec.firstChild);
+      host.insertBefore(d, sec); sec.remove();
+    });
+  }
+  const montar = () => { try { observar('ctContenido', porTitulos); observar('planificacionResult', porSecciones); } catch (e) { console.warn('Plegables:', e); } };
+  const arrancar = () => { montar(); setTimeout(montar, 1500); };          // segunda pasada por si Cambios de turno se monta tarde
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
 })();
