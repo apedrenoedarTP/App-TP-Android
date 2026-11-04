@@ -2184,10 +2184,17 @@ function _auditoriaEquipo(nombreEquipo) {
     mants.findIndex(n => n.accion === m.accion && n.periodicidad === m.periodicidad) !== i
   ).length;
 
-  const historial  = db.historialEquipos?.[nombreEquipo] || [];
-  const ultimaInt  = historial.length
-    ? historial.slice().sort((a, b) => new Date(b.fecha) - new Date(a.fecha))[0].fecha
-    : '—';
+  const historial  = _historialDeEquipo(nombreEquipo);
+  const ultimaInt  = historial.length ? (historial[0].fecha || '—') : '—';
+  const ultimas    = historial.slice(0, 3).map(h =>
+    `<p class="txt-secondary-sm" style="margin:2px 0 2px 14px">• ${_h(h.fecha || '')} — ${_h(String(h.descripcion || '').slice(0, 120))}</p>`
+  ).join('');
+
+  const grupo = _gruposEquipo(nombreEquipo);
+  const faltan = grupo.length > 1 ? _planesFaltantes(nombreEquipo).length : 0;
+  const lineaGrupo = grupo.length < 2 ? '' :
+    `<p class="txt-secondary-sm">🔗 Plan compartido con: <strong>${_h(grupo.filter(n => n !== nombreEquipo).join(', '))}</strong>` +
+    (faltan ? ` · <span style="color:#f0a500">${faltan} sin igualar</span> <button type="button" class="button" onclick="sincronizarPlanesGrupo(${_h(JSON.stringify(nombreEquipo))})">Igualar planes</button>` : ' · planes idénticos ✓') + '</p>';
 
   const semaforo = (vencidos > 4 || correctivos >= 5 || duplicados > 1) ? '🔴' :
                    (vencidos >= 2 || duplicados >= 1 || correctivos >= 2) ? '🟡' : '🟢';
@@ -2197,10 +2204,12 @@ function _auditoriaEquipo(nombreEquipo) {
     <div class="eq-auditoria" style="margin:10px 0;padding:10px;border-radius:6px;border:1px solid ${color};background:color-mix(in srgb,${color} 8%,transparent)">
       <p style="font-weight:700;color:${color};margin:0 0 8px">${semaforo} AUDITORÍA DEL EQUIPO</p>
       <p class="txt-secondary-sm">📋 Mantenimientos programados: <strong>${total}</strong></p>
+      ${lineaGrupo}
       <p style="font-size:0.83rem;margin:3px 0;color:${vencidos > 0 ? 'var(--red)' : 'inherit'}">⏰ Mantenimientos vencidos: <strong>${vencidos}</strong></p>
       <p style="font-size:0.83rem;margin:3px 0;color:${correctivos >= 5 ? 'var(--red)' : correctivos >= 2 ? '#f0a500' : 'inherit'}">🔧 Correctivos 12 meses: <strong>${correctivos}</strong></p>
       <p style="font-size:0.83rem;margin:3px 0;color:${duplicados > 0 ? '#f0a500' : 'inherit'}">⚠️ Posibles duplicados: <strong>${duplicados}</strong></p>
       <p class="txt-secondary-sm">🕐 Última intervención: <strong>${ultimaInt}</strong></p>
+      ${ultimas}
     </div>`;
 }
 
@@ -2766,6 +2775,63 @@ async function _cargarOperariosCheckboxes(containerId, uidsActuales) {
   } catch(e) { console.warn('_cargarOperariosCheckboxes error:', e); }
 }
 
+// ── Plan de mantenimiento compartido entre equipos idénticos (los que comparten recambios) ──
+function _planNorm(s) { return String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLowerCase(); }
+// Equipos del grupo (principal + los que usan sus recambios); [nombre] si no comparte
+function _gruposEquipo(nombre) {
+  const l = (window.equiposDb && window.equiposDb.equiposGuardados) || [];
+  const eq = l.find(e => e && e.equipo === nombre);
+  if (!eq) return [nombre];
+  const principal = eq.recambiosDe || eq.equipo;
+  return [principal].concat(l.filter(e => e && e.recambiosDe === principal).map(e => e.equipo)).filter((n, i, a) => n && a.indexOf(n) === i);
+}
+// Mismo preventivo (acción y periodicidad) en los demás equipos del grupo
+function _gemelosPlan(m) {
+  if (!m || !m.equipo || (m.tipo || 'preventivo') !== 'preventivo') return [];
+  const otros = _gruposEquipo(m.equipo).filter(n => n !== m.equipo);
+  if (!otros.length) return [];
+  const k = _planNorm(m.accion);
+  return (db.mantenimientosPeriodicos || []).filter(o => o && o.id !== m.id && (o.tipo || 'preventivo') === 'preventivo'
+    && otros.includes(o.equipo) && Number(o.periodicidad) === Number(m.periodicidad) && _planNorm(o.accion) === k);
+}
+function _copiaPlan(o, equipo, id) {
+  return { id, fecha: o.fecha, fechaUltimaEjecucion: o.fechaUltimaEjecucion || o.fecha, operario: '', equipo, accion: o.accion,
+    periodicidad: o.periodicidad, tipo: 'preventivo', historial: [], creadoPorUid: _sesionAutor().uid,
+    creadoPorNombre: _sesionAutor().nombre, creadoPorEmail: _sesionAutor().email, asignadoAUids: [], asignadoANombres: [] };
+}
+// Planes que existen en algún equipo del grupo y faltan en otro
+function _planesFaltantes(nombre) {
+  const grupo = _gruposEquipo(nombre); if (grupo.length < 2) return [];
+  const lista = (db.mantenimientosPeriodicos || []).filter(m => m && (m.tipo || 'preventivo') === 'preventivo' && grupo.includes(m.equipo));
+  const clave = m => _planNorm(m.accion) + '|' + Number(m.periodicidad);
+  const faltan = [], vistos = {};
+  lista.forEach(m => grupo.forEach(g => {
+    const id = g + '#' + clave(m);
+    if (g === m.equipo || vistos[id] || lista.some(o => o.equipo === g && clave(o) === clave(m))) return;
+    vistos[id] = true; faltan.push({ origen: m, destino: g });
+  }));
+  return faltan;
+}
+async function sincronizarPlanesGrupo(nombre) {
+  const falt = _planesFaltantes(nombre);
+  if (!falt.length) { alert('Los planes de mantenimiento de este grupo ya son idénticos.'); return; }
+  const resumen = falt.map(f => '• ' + f.destino + ': ' + f.origen.accion + ' (cada ' + f.origen.periodicidad + ' días)').join('\n');
+  if (!confirm('Se crearán ' + falt.length + ' mantenimiento(s) para igualar los planes de los equipos que comparten recambios:\n\n' + resumen + '\n\nLa fecha de referencia es la del equipo de origen. ¿Continuar?')) return;
+  try {
+    const t = Date.now();
+    const nuevos = falt.map((f, i) => _copiaPlan(f.origen, f.destino, 'MANT-' + t + '-' + (i + 1)));
+    db.mantenimientosPeriodicos.push(...nuevos);
+    if (!db.preventivosEquipos) db.preventivosEquipos = [];
+    db.preventivosEquipos.push(...nuevos);
+    await realDb.ref(`instalaciones/${INST()}/mantenimientosPeriodicos`).set(db.mantenimientosPeriodicos);
+    realDb.ref(`instalaciones/${INST()}/preventivosEquipos`).set(db.preventivosEquipos).catch(e => console.warn(e));
+    await saveToLocalStorage();
+    actualizarListaMantenimientos(); checkPastDueMaintenances(); updateNotificationIcons(); actualizarListaEquipos();
+    alert(nuevos.length + ' mantenimiento(s) creados. Los planes del grupo ya son idénticos.');
+  } catch (e) { console.error('sincronizarPlanesGrupo:', e); alert('Error al igualar los planes: ' + e.message); }
+}
+window.sincronizarPlanesGrupo = sincronizarPlanesGrupo;
+
 async function agregarMantenimientoPeriodico() {
   const fecha        = document.getElementById('fechaMantenimiento').value;
   const equipo       = document.getElementById('equipoPeriodicidad').value;
@@ -2801,13 +2867,22 @@ async function agregarMantenimientoPeriodico() {
 
   try {
     if (!db.mantenimientosPeriodicos) db.mantenimientosPeriodicos = [];
-    db.mantenimientosPeriodicos.push(mantenimiento);
+    // Plan compartido: el mismo mantenimiento en los equipos que comparten recambios (cada uno con su historial y fechas)
+    let copias = [];
+    const hermanos = esTarea ? [] : _gruposEquipo(equipo).filter(n => n !== equipo && !db.mantenimientosPeriodicos.some(o =>
+      o && o.equipo === n && (o.tipo || 'preventivo') === 'preventivo' && _planNorm(o.accion) === _planNorm(accion) && Number(o.periodicidad) === periodicidad));
+    if (hermanos.length && confirm('«' + equipo + '» comparte recambios con: ' + hermanos.join(', ') + '.\n\n¿Crear este mismo mantenimiento también en ellos? (Si los equipos son idénticos, el plan debe serlo.)')) {
+      copias = hermanos.map((n, i) => _copiaPlan(mantenimiento, n, mantenimiento.id + '-' + (i + 1)));
+    }
+    db.mantenimientosPeriodicos.push(mantenimiento, ...copias);
     await realDb.ref(`instalaciones/${INST()}/mantenimientosPeriodicos`).set(db.mantenimientosPeriodicos);
 
     // Routing por tipo seleccionado — criterio único
     if (esTarea) {
       guardarTrabajoPeriodico(mantenimiento);
     } else {
+      if (!db.preventivosEquipos) db.preventivosEquipos = [];
+      copias.forEach(c => db.preventivosEquipos.push(c));
       guardarPreventivoEquipo(mantenimiento);
     }
 
@@ -3004,7 +3079,9 @@ window.renderHistorialConfirmaciones = renderHistorialConfirmaciones;
 async function eliminarMantenimiento(id) {
   if (!confirm('¿Está seguro de eliminar este mantenimiento periódico?')) return;
   try {
-    db.mantenimientosPeriodicos = db.mantenimientosPeriodicos.filter(m => m.id !== id);
+    const _m = db.mantenimientosPeriodicos.find(m => m.id === id), _gem = _m ? _gemelosPlan(_m) : [], _quitar = new Set([id]);
+    if (_gem.length && confirm('Este mantenimiento también está en: ' + _gem.map(g => g.equipo).join(', ') + ' (comparten recambios).\n\n¿Eliminarlo también en ellos?')) _gem.forEach(g => _quitar.add(g.id));
+    db.mantenimientosPeriodicos = db.mantenimientosPeriodicos.filter(m => !_quitar.has(m.id));
     await realDb.ref(`instalaciones/${INST()}/mantenimientosPeriodicos`).set(db.mantenimientosPeriodicos);
     await saveToLocalStorage();
     actualizarListaMantenimientos();
@@ -3054,6 +3131,11 @@ async function guardarEdicionMantenimiento(id) {
       ..._pnLeer(`newAsignado-${id}`)
     };
 
+    // Plan compartido: si cambia la acción o la periodicidad, se ofrece aplicarlo igual en los equipos gemelos
+    const gemelos = (registroPrevio.equipo === newEquipment && (registroPrevio.accion !== newAction || Number(registroPrevio.periodicidad) !== newPeriod)) ? _gemelosPlan(registroPrevio) : [];
+    if (gemelos.length && confirm('Este mantenimiento también está en: ' + gemelos.map(g => g.equipo).join(', ') + ' (comparten recambios).\n\n¿Aplicar el mismo cambio de acción y periodicidad en ellos?')) {
+      gemelos.forEach(g => { g.accion = newAction; g.periodicidad = newPeriod; });
+    }
     await realDb.ref(`instalaciones/${INST()}/mantenimientosPeriodicos`).set(db.mantenimientosPeriodicos);
     await saveToLocalStorage();
     actualizarListaMantenimientos();
@@ -3865,19 +3947,37 @@ function restaurarBackupEquiposLocal() {
   }
 }
 
-function exportarHistorialEquipo(nombreEquipo) {
-  var historial = (db.historialEquipos && db.historialEquipos[nombreEquipo]) ? db.historialEquipos[nombreEquipo] : [];
-  if (!historial.length) { alert('No hay historial registrado para este equipo'); return; }
-  var cabecera = 'fecha,equipo,descripcion,tipo,operario';
-  var lineas = [cabecera];
-  for (var i = 0; i < historial.length; i++) {
-    var e = historial[i];
-    var cols = [e.fecha||'', nombreEquipo, e.descripcion||'', e.tipo||'', e.operario||''];
-    lineas.push(cols.map(function(v){ return '"' + String(v).replace(/"/g,'""') + '"'; }).join(','));
+async function exportarHistorialEquipo(nombreEquipo) {
+  var lista = _historialDeEquipo(nombreEquipo).map(function(e) {
+    return { fecha: e.fecha || '', descripcion: e.descripcion || '', tipo: e.tipo || '', operario: e.operario || '' };
+  });
+  // Actuaciones anteriores que solo quedaron en historialTrabajos (una lectura de ~20 KB, solo al pulsar)
+  try {
+    if (INST() !== 'default') {
+      var snap = await realDb.ref('instalaciones/' + INST() + '/historialTrabajos').once('value');
+      var k = _histNorm(nombreEquipo), visto = {};
+      lista.forEach(function(e) { visto[e.fecha + '|' + _histNorm(e.descripcion)] = true; });
+      snap.forEach(function(ch) {
+        var v = ch.val() || {};
+        if (_histNorm(v.equipo) !== k) return;
+        var clave = (v.fecha || '') + '|' + _histNorm(v.descripcion);
+        if (visto[clave]) return;
+        visto[clave] = true;
+        lista.push({ fecha: v.fecha || '', descripcion: v.descripcion || '', tipo: (typeof ORIGEN_LABELS_HIST !== 'undefined' && ORIGEN_LABELS_HIST[v.origen]) || v.origen || '', operario: v.nombre || '' });
+      });
+    }
+  } catch (e) { console.warn('exportarHistorialEquipo: historialTrabajos no disponible', e); }
+  lista.sort(function(a, b) { return String(b.fecha).localeCompare(String(a.fecha)); });
+  if (!lista.length) { alert('No hay historial registrado para este equipo'); return; }
+  var lineas = ['fecha,equipo,descripcion,tipo,operario'];
+  for (var i = 0; i < lista.length; i++) {
+    var e2 = lista[i];
+    var cols = [e2.fecha, nombreEquipo, e2.descripcion, e2.tipo, e2.operario];
+    lineas.push(cols.map(function(v) { return '"' + String(v).replace(/"/g, '""') + '"'; }).join(','));
   }
-  var blob = new Blob([lineas.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  var blob = new Blob(['\uFEFF' + lineas.join('\n')], { type: 'text/csv;charset=utf-8;' });
   var url = URL.createObjectURL(blob);
-  var a = document.createElement('a'); a.href = url; a.download = 'historial_' + nombreEquipo.replace(/[^a-z0-9]/gi,'_') + '.csv'; a.click();
+  var a = document.createElement('a'); a.href = url; a.download = 'historial_' + nombreEquipo.replace(/[^a-z0-9]/gi, '_') + '.csv'; a.click();
   URL.revokeObjectURL(url);
 }
 window.exportarHistorialEquipo = exportarHistorialEquipo;
@@ -3888,35 +3988,69 @@ window.exportarHistorialEquipo = exportarHistorialEquipo;
 
 // ── Historial de equipos ────────────────────────────────────────────────────
 
-// Guarda una intervención en el historial del equipo y sincroniza con Firebase
+// Búsqueda tolerante: mayúsculas, tildes, espacios y guiones (– — -) no distinguen
+function _histNorm(s) {
+  return String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u2010-\u2015\u2212]/g, '-').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+// Clave válida en Firebase (no admite . $ # [ ] /)
+function _histClave(nombre) { return String(nombre || '').trim().replace(/[.$#\[\]\/]/g, '_'); }
+// Historial de un equipo (más reciente primero), tanto si se guardó como lista o como objeto
+function _historialDeEquipo(nombre) {
+  const mapa = db.historialEquipos || {};
+  const k1 = _histNorm(nombre), k2 = _histNorm(_histClave(nombre));
+  if (!k1) return [];
+  let out = [];
+  Object.keys(mapa).forEach(function(clave) {
+    const kc = _histNorm(clave);
+    if (kc !== k1 && kc !== k2) return;
+    const v = mapa[clave];
+    out = out.concat(Array.isArray(v) ? v : Object.values(v || {}));
+  });
+  return out.filter(Boolean).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+}
+
+// Guarda una intervención en el historial del equipo: escribe solo el nodo de ese equipo (<1 KB)
 async function _guardarHistorialEquipo(nombreEquipo, entrada) {
+  nombreEquipo = String(nombreEquipo || '').trim();
   if (!nombreEquipo) return;
   if (!db.historialEquipos) db.historialEquipos = {};
-  if (!db.historialEquipos[nombreEquipo]) db.historialEquipos[nombreEquipo] = [];
-  db.historialEquipos[nombreEquipo].unshift(entrada); // más reciente primero
-  // Limitar a 50 entradas por equipo para no inflar Firebase
-  if (db.historialEquipos[nombreEquipo].length > 50)
-    db.historialEquipos[nombreEquipo].length = 50;
+  let operario = (entrada && entrada.operario) || '';
+  if (!operario) { try { operario = _sesionAutor().nombre || ''; } catch (e) {} }
+  const limpia = {
+    fecha:       (entrada && entrada.fecha) || new Date().toISOString().split('T')[0],
+    descripcion: (entrada && entrada.descripcion) || '',
+    tipo:        (entrada && entrada.tipo) || '',
+    operario:    operario
+  };
+  const k = _histNorm(nombreEquipo);
+  const clave = Object.keys(db.historialEquipos).find(c => _histNorm(c) === k) || _histClave(nombreEquipo);
   try {
-    await realDb.ref(`instalaciones/${INST()}/historialEquipos`).set(db.historialEquipos);
+    const res = await realDb.ref(`instalaciones/${INST()}/historialEquipos/${clave}`).transaction(function(actual) {
+      const lista = Array.isArray(actual) ? actual.slice() : Object.values(actual || {});
+      lista.unshift(limpia);                 // más reciente primero
+      if (lista.length > 50) lista.length = 50;
+      return lista;
+    });
+    const v = res && res.snapshot ? res.snapshot.val() : null;
+    db.historialEquipos[clave] = Array.isArray(v) ? v : Object.values(v || {});
     localStorage.setItem(LS_KEY_APP, JSON.stringify(db));
   } catch (e) { console.warn('historialEquipos sync error:', e); }
 }
 
 // Muestra las últimas 3 intervenciones bajo el input indicado
 function _mostrarHistorialEquipo(nombreEquipo, inputEl) {
-  // Remove previous panel if any
   const prev = inputEl.parentElement.querySelector('.eq-historial-panel');
   if (prev) prev.remove();
-  if (!nombreEquipo || !db.historialEquipos || !db.historialEquipos[nombreEquipo]) return;
-  const entries = db.historialEquipos[nombreEquipo].slice(0, 3);
+  if (!nombreEquipo) return;
+  const entries = _historialDeEquipo(nombreEquipo).slice(0, 4);
   if (!entries.length) return;
   const panel = document.createElement('div');
   panel.className = 'eq-historial-panel';
   panel.innerHTML = '<p class="eq-historial-title">Últimas intervenciones:</p>' +
     entries.map(e =>
       `<div class="eq-historial-entry">
-        <span class="eq-historial-fecha">${e.fecha || ''}</span>
+        <span class="eq-historial-fecha">${_h(e.fecha || '')}</span>
         <span>${_h(e.descripcion) || ''}</span>
       </div>`
     ).join('');
@@ -5283,39 +5417,6 @@ function guardarModificativo() {
   alert('Modificativo guardado en curso');
 }
 
-async function migrarDatosAInstalacion() {
-  const inst = localStorage.getItem('instalacionActiva');
-  if (!inst || inst === 'default') {
-    alert('Selecciona una instalación antes de migrar');
-    return;
-  }
-  if (!confirm(`Esto copiará TODOS los datos de edarData a la instalación "${inst}".\nLos datos existentes en esa instalación serán reemplazados.\n¿Continuar?`)) return;
-
-  try {
-    const snap = await realDb.ref('edarData').once('value');
-    const data = snap.val();
-    if (!data) { alert('No hay datos en edarData para migrar'); return; }
-
-    const claves = ['workOrders','workOrdersAverias','workOrdersTareas',
-                    'mantenimientosPeriodicos','stock','equiposDb','historialEquipos',
-                    'preventivosEquipos','trabajosPeriodicos'];
-
-    for (const clave of claves) {
-      if (data[clave] !== undefined) {
-        await realDb.ref(`instalaciones/${inst}/${clave}`).set(data[clave]);
-      }
-    }
-
-    alert(`Migración completada a instalación "${inst}".\nRecarga la app para ver los datos.`);
-    window.location.reload();
-  } catch(e) {
-    alert('Error en la migración: ' + e.message);
-    console.error(e);
-  }
-}
-
-window.migrarDatosAInstalacion = migrarDatosAInstalacion;
-
 /* =============================================================================
    EXPORTACIÓN CENTRALIZADA
 ============================================================================= */
@@ -5651,96 +5752,6 @@ document.addEventListener('DOMContentLoaded', async function() {
   }
 });
 
-function renderAuditoriaActivos() {
-  const el = document.getElementById('auditoriaActivosResult');
-  if (!el) return;
-
-  const equipos   = (window.equiposDb?.equiposGuardados || []).filter(Boolean);
-  const mants     = (db.mantenimientosPeriodicos || []).filter(Boolean);
-  const averias   = (db.workOrdersAverias || []).filter(Boolean);
-  const ahora     = new Date();
-  const hace1y    = new Date(ahora.getTime() - 365 * 24 * 60 * 60 * 1000);
-
-  const correctivosMap = {};
-  averias.forEach(w => {
-    if (!w.equipo || !w.fecha || new Date(w.fecha) < hace1y) return;
-    correctivosMap[w.equipo] = (correctivosMap[w.equipo] || 0) + 1;
-  });
-  const topCorrectivos = Object.entries(correctivosMap)
-    .sort((a, b) => b[1] - a[1]).slice(0, 10);
-
-  const vencidosMap = {};
-  mants.forEach(m => {
-    if (!esMantenimientoVencido(m)) return;
-    vencidosMap[m.equipo] = (vencidosMap[m.equipo] || 0) + 1;
-  });
-  const topVencidos = Object.entries(vencidosMap)
-    .sort((a, b) => b[1] - a[1]).slice(0, 10);
-
-  const conMant = new Set(mants.map(m => (m.equipo || '').trim().toLowerCase()));
-  const sinMant = equipos.filter(e => !conMant.has((e.equipo || '').trim().toLowerCase()));
-
-  const dupMap = {};
-  mants.forEach((m, i) => {
-    const esDup = mants.findIndex(n => n.equipo === m.equipo && n.accion === m.accion && n.periodicidad === m.periodicidad) !== i;
-    if (esDup) dupMap[m.equipo] = (dupMap[m.equipo] || new Set()).add(m.accion);
-  });
-
-  const incompletos = equipos.filter(e => !e.modelo || !e.familia || !e.zona);
-
-  const salud = equipos.map(e => {
-    const nombre = (e.equipo || '').trim();
-    const c = correctivosMap[nombre] || 0;
-    const v = vencidosMap[nombre] || 0;
-    const d = dupMap[nombre] ? dupMap[nombre].size : 0;
-    const s = (v >= 3 || d > 1 || c > 5) ? '🔴' : (v >= 1 || d >= 1 || c >= 3) ? '🟡' : '🟢';
-    return { nombre, s, c, v, d };
-  }).sort((a, b) => ({ '🔴': 0, '🟡': 1, '🟢': 2 }[a.s] - { '🔴': 0, '🟡': 1, '🟢': 2 }[b.s]));
-
-  const row = (label, val) => `<p class="txt-secondary-sm">${label}: <strong>${val}</strong></p>`;
-  const sec = (title, html) => `<div class="panel-sec">
-    <p style="font-weight:700;margin:0 0 8px">${title}</p>${html}</div>`;
-
-  el.innerHTML = [
-    sec('🔧 Equipos con más correctivos (12 meses)',
-      topCorrectivos.length
-        ? topCorrectivos.map(([eq, n]) => row(eq, n)).join('')
-        : '<p class="txt-muted-sm">Sin datos</p>'),
-
-    sec('⏰ Equipos con más mantenimientos vencidos',
-      topVencidos.length
-        ? topVencidos.map(([eq, n]) => row(eq, n)).join('')
-        : '<p class="txt-muted-sm">Ninguno vencido ✅</p>'),
-
-    sec('📭 Equipos sin mantenimiento programado',
-      sinMant.length
-        ? sinMant.map(e => `<p class="txt-secondary-sm">${_h(e.equipo) || '(sin nombre)'}</p>`).join('')
-        : '<p class="txt-muted-sm">Todos tienen mantenimiento ✅</p>'),
-
-    sec('⚠️ Posibles duplicados',
-      Object.keys(dupMap).length
-        ? Object.entries(dupMap).map(([eq, acc]) =>
-            `<p class="txt-secondary-sm"><strong>${eq}</strong>: ${[...acc].join(', ')}</p>`).join('')
-        : '<p class="txt-muted-sm">Sin duplicados detectados ✅</p>'),
-
-    sec('📋 Equipos con datos incompletos',
-      incompletos.length
-        ? incompletos.map(e => {
-            const f = [];
-            if (!e.modelo) f.push('modelo'); if (!e.familia) f.push('familia'); if (!e.zona) f.push('zona');
-            return `<p class="txt-secondary-sm"><strong>${_h(e.equipo) || '?'}</strong>: sin ${f.join(', ')}</p>`;
-          }).join('')
-        : '<p class="txt-muted-sm">Todos completos ✅</p>'),
-
-    sec('🏥 Índice de salud',
-      `<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:6px">Equipo · Estado · Correctivos · Vencidos · Duplicados</div>` +
-      salud.map(e =>
-        `<p class="txt-secondary-sm">${e.s} <strong>${_h(e.nombre)}</strong> · C:${e.c} V:${e.v} D:${e.d}</p>`
-      ).join(''))
-  ].join('');
-}
-window.renderAuditoriaActivos = renderAuditoriaActivos;
-
 function renderCentroOperativo() {
   const el = document.getElementById('centroOperativoResult');
   if (!el) return;
@@ -5936,6 +5947,10 @@ async function confirmarTareaRealizada(id, tipo) {
         uid:         autor.uid,
         nombre:      autor.nombre
       });
+      if (db.mantenimientosPeriodicos[idx].equipo) await _guardarHistorialEquipo(db.mantenimientosPeriodicos[idx].equipo, {
+        fecha, descripcion: db.mantenimientosPeriodicos[idx].accion || obs,
+        tipo: db.mantenimientosPeriodicos[idx].tipo === 'preventivo' ? 'preventivo' : 'tarea'
+      });
     } else {
       const idx = db.workOrdersTareas.findIndex(t => String(t.id) === String(id));
       if (idx === -1) { alert('Tarea no encontrada.'); return; }
@@ -5954,6 +5969,9 @@ async function confirmarTareaRealizada(id, tipo) {
         uid:         autor.uid,
         nombre:      autor.nombre
       });
+      if (db.workOrdersTareas[idx].equipo) await _guardarHistorialEquipo(db.workOrdersTareas[idx].equipo, {
+        fecha, descripcion: db.workOrdersTareas[idx].descripcion, tipo: 'parte'
+      });
     }
     await saveToLocalStorage();
     alert('✅ Tarea confirmada correctamente.');
@@ -5961,67 +5979,6 @@ async function confirmarTareaRealizada(id, tipo) {
   } catch(e) { alert('Error al confirmar: ' + e.message); }
 }
 window.confirmarTareaRealizada = confirmarTareaRealizada;
-
-function exportarAuditoriaXLSX() {
-  const equipos  = (window.equiposDb?.equiposGuardados || []).filter(Boolean);
-  const mants    = (db.mantenimientosPeriodicos || []).filter(Boolean);
-  const averias  = (db.workOrdersAverias || []).filter(Boolean);
-  const hace1y   = new Date(new Date().getTime() - 365 * 24 * 60 * 60 * 1000);
-
-  const correctivosMap = {};
-  averias.forEach(w => {
-    if (!w.equipo || !w.fecha || new Date(w.fecha) < hace1y) return;
-    correctivosMap[w.equipo] = (correctivosMap[w.equipo] || 0) + 1;
-  });
-
-  const vencidosMap = {};
-  mants.forEach(m => {
-    if (!esMantenimientoVencido(m)) return;
-    vencidosMap[m.equipo] = (vencidosMap[m.equipo] || 0) + 1;
-  });
-
-  const dupMap = {};
-  mants.forEach((m, i) => {
-    const esDup = mants.findIndex(n => n.equipo === m.equipo && n.accion === m.accion && n.periodicidad === m.periodicidad) !== i;
-    if (esDup) dupMap[m.equipo] = (dupMap[m.equipo] || new Set()).add(m.accion);
-  });
-
-  const estadoTexto = { '🔴': 'Rojo', '🟡': 'Amarillo', '🟢': 'Verde' };
-
-  const filas = equipos.map(e => {
-    const nombre = (e.equipo || '').trim();
-    const c = correctivosMap[nombre] || 0;
-    const v = vencidosMap[nombre] || 0;
-    const d = dupMap[nombre] ? dupMap[nombre].size : 0;
-    const s = (v >= 3 || d > 1 || c > 5) ? '🔴' : (v >= 1 || d >= 1 || c >= 3) ? '🟡' : '🟢';
-    return {
-      Equipo:               nombre,
-      Estado:               estadoTexto[s] || '',
-      Familia:              e.familia  || '',
-      Zona:                 e.zona     || '',
-      Modelo:               e.modelo   || '',
-      'Correctivos 12m':    c,
-      'Vencidos':           v,
-      'Duplicados':         d
-    };
-  }).sort((a, b) => {
-    const o = { 'Rojo': 0, 'Amarillo': 1, 'Verde': 2 };
-    return (o[a.Estado] ?? 3) - (o[b.Estado] ?? 3);
-  });
-
-  if (!filas.length) { alert('No hay datos para exportar. Ejecuta la auditoría primero.'); return; }
-
-  const blob = crearExcelBlob(filas, 'Auditoría Activos');
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = `auditoria_activos_${new Date().toISOString().split('T')[0]}.xlsx`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-window.exportarAuditoriaXLSX = exportarAuditoriaXLSX;
 
 function renderPlanificacion() {
   const resEl = document.getElementById('planificacionResumen');
@@ -9589,8 +9546,8 @@ function _cqMontar() {
   function celdaTabla(c, k, v, ro) {
     const dis = ro ? ' disabled' : '';
     if (c.tipo === 'check') return `<input type="checkbox" data-d="${k}" data-c="${esc(c.id)}"${v ? ' checked' : ''}${dis} aria-label="${esc(c.nombre)}">`;
-    if (c.tipo === 'num')   return `<input type="number" inputmode="decimal" step="0.25" min="0" data-d="${k}" data-c="${esc(c.id)}" value="${v == null ? '' : esc(v)}"${dis} aria-label="${esc(c.nombre)}">`;
-    return `<input type="text" maxlength="120" data-d="${k}" data-c="${esc(c.id)}" value="${v == null ? '' : esc(v)}"${dis} aria-label="${esc(c.nombre)}">`;
+    if (c.tipo === 'num')   return `<input type="number" inputmode="decimal" step="0.25" min="0" data-d="${k}" data-c="${esc(c.id)}" value="${v == null ? '' : (v === true ? 1 : esc(v))}"${dis} aria-label="${esc(c.nombre)}">`;
+    return `<input type="text" maxlength="120" data-d="${k}" data-c="${esc(c.id)}" value="${(v == null || v === true) ? '' : esc(v)}"${dis} aria-label="${esc(c.nombre)}">`;
   }
   function vistaTabla(cols, ro) {
     const n = nDias(S.a, S.m);
@@ -9730,6 +9687,7 @@ function _cqMontar() {
     if (b.dataset.act === 'todo') { const con = listado.filter(f => Object.keys(f.datos.dias).length); if (!con.length) { alert('Todavía no hay datos de este mes.'); return; } descargar(libroDe(con.map(f => ({ nombre: f.nombre, datos: f.datos }))), 'variables_' + clave(S.a, S.m) + '.xlsx'); return; }
     if (b.dataset.cmov) { moverConcepto(Number(b.dataset.cmov), Number(b.dataset.dir)); return; }
     if (b.dataset.cadd) { anadirConcepto(); return; }
+    if (b.dataset.crestab) { restablecerBase(); return; }
     if (b.dataset.cdel) { quitarConcepto(Number(b.dataset.cdel)); return; }
     if (b.dataset.cguardar) { await guardarConceptos(); return; }
   }
@@ -9738,16 +9696,26 @@ function _cqMontar() {
     const c = (conceptosCache || [])[Number(k)]; if (!c) return;
     if (i.dataset.cn !== undefined) c.nombre = i.value.trim().slice(0, 40) || c.nombre;
     if (i.dataset.ca !== undefined) c.activo = i.checked;
+    if (i.dataset.ct !== undefined && c.tipo !== i.value) {
+      if (!confirm('¿Cambiar «' + c.nombre + '» a este tipo? Los datos ya escritos no se borran, pero se interpretan con el tipo nuevo (un número mayor que 0 cuenta como casilla marcada y una casilla marcada cuenta como 1).')) { pintarConceptos(); return; }
+      c.tipo = i.value;
+    }
   }
   function pintarConceptos() {
     const h = el('vaConceptos'); if (!h) return;
     const lista = conceptosCache || BASE;
-    h.innerHTML = '<p class="txt-muted-sm">Cambia el nombre, el orden o desactiva una columna. Las columnas desactivadas no se muestran, pero sus datos se conservan.</p>' +
+    h.innerHTML = '<p class="txt-muted-sm">Cambia el nombre, el tipo (número, casilla o texto) o desactiva una columna. Para cambiar el orden usa las flechas ↑↓: mueven la columna entera. Las columnas desactivadas no se muestran, pero sus datos se conservan.</p>' +
       lista.map((c, i) => `<div class="vr-conc"><button type="button" class="vr-flecha" style="min-width:38px;min-height:38px" data-cmov="${i}" data-dir="-1" aria-label="Subir">↑</button><button type="button" class="vr-flecha" style="min-width:38px;min-height:38px" data-cmov="${i}" data-dir="1" aria-label="Bajar">↓</button>` +
-        `<input type="text" maxlength="40" value="${esc(c.nombre)}" data-cidx="${i}" data-cn><span class="vr-tipo">${c.tipo === 'num' ? 'número' : c.tipo === 'check' ? 'casilla' : 'texto'}</span>` +
+        `<input type="text" maxlength="40" value="${esc(c.nombre)}" data-cidx="${i}" data-cn><select data-cidx="${i}" data-ct aria-label="Tipo de columna" style="min-height:38px"><option value="num"${c.tipo === 'num' ? ' selected' : ''}>Número (horas…)</option><option value="check"${c.tipo === 'check' ? ' selected' : ''}>Casilla (✓)</option><option value="texto"${c.tipo === 'texto' ? ' selected' : ''}>Texto</option></select>` +
         `<label class="vr-chkl" style="display:flex;gap:4px;align-items:center;font-size:.85rem"><input type="checkbox" data-cidx="${i}" data-ca${c.activo === false ? '' : ' checked'}> Activa</label>` +
         (BASE.some(b => b.id === c.id) ? '' : `<button type="button" class="vr-flecha" style="min-width:38px;min-height:38px" data-cdel="${i}" aria-label="Quitar">🗑</button>`) + '</div>').join('') +
-      '<div class="vr-acciones"><button type="button" class="button back-button" data-cadd="1">+ Añadir concepto</button><button type="button" class="button" data-cguardar="1">Guardar conceptos</button></div>';
+      '<div class="vr-acciones"><button type="button" class="button back-button" data-cadd="1">+ Añadir concepto</button><button type="button" class="button back-button" data-crestab="1">Restablecer columnas base</button><button type="button" class="button" data-cguardar="1">Guardar conceptos</button></div>';
+  }
+  function restablecerBase() {
+    if (!confirm('¿Restablecer las columnas base (nombre, tipo y orden originales)? Se conservan las que hayas añadido, al final, y ningún dato se borra. No se guarda hasta que pulses «Guardar conceptos».')) return;
+    const propios = (conceptosCache || []).filter(c => !BASE.some(b => b.id === c.id));
+    conceptosCache = BASE.map(c => ({ ...c })).concat(propios);
+    pintarConceptos();
   }
   function moverConcepto(i, dir) { const l = conceptosCache; const j = i + dir; if (!l || j < 0 || j >= l.length) return; [l[i], l[j]] = [l[j], l[i]]; pintarConceptos(); }
   function anadirConcepto() {

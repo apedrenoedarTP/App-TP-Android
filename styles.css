@@ -1516,7 +1516,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 
 /* Fondo con viñeteado: el centro queda más calmado y los bordes más oscuros */
 body::before {
-  background: radial-gradient(ellipse at center, rgba(8,11,17,.62) 0%, rgba(8,11,17,.78) 65%, rgba(8,11,17,.9) 100%);
+  background: radial-gradient(ellipse at center, rgba(8,11,17,.42) 0%, rgba(8,11,17,.60) 65%, rgba(8,11,17,.78) 100%);
 }
 
 /* El logo pasa detrás del contenido (antes se dibujaba encima de los botones) */
