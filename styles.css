@@ -1867,3 +1867,43 @@ body.sin-gestion-almacen .alm-edicion select { pointer-events: none; opacity: .7
 @media (max-width: 640px) {
   :is(#misGestionesScreen, #comprasHubScreen)[style*="block"] { margin-top: 44px; padding: 18px 14px; border-radius: 14px; }
 }
+
+/* Periodicidad: la cabecera del grupo abierto se queda fija arriba al recorrer la lista, para cerrar sin volver al principio */
+#adminPeriodicidadScreen .eq-familia { overflow: clip; }
+#adminPeriodicidadScreen .eq-familia:not(.eq-collapsed) > .eq-familia-header {
+  position: sticky;
+  top: calc(env(safe-area-inset-top, 0px) + 62px);
+  z-index: 20;
+  box-shadow: 0 2px 8px rgba(0,0,0,.35);
+  background: linear-gradient(var(--blue-dim), var(--blue-dim)), var(--bg-surface) !important;
+}
+#adminPeriodicidadScreen .eq-familia:not(.eq-collapsed) > .eq-familia-header[style*="39,174,96"] {
+  background: linear-gradient(rgba(39,174,96,.12), rgba(39,174,96,.12)), var(--bg-surface) !important;
+}
+
+/* Periodicidad: banda opaca sobre la cabecera fija, para que la lista no se vea correr por detrás */
+#adminPeriodicidadScreen .eq-familia:not(.eq-collapsed) > .eq-familia-header::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: calc(env(safe-area-inset-top, 0px) + 62px);
+  background: var(--bg);
+}
+
+/* Periodicidad: al abrir una tarjeta queda justo bajo la cabecera fija */
+#adminPeriodicidadScreen .pending-record { scroll-margin-top: 125px; }
+
+/* Almacén: cabecera compacta, para ver el primer artículo sin desplazar */
+#almacenScreen .title-sub { display: none; }
+#almacenScreen > details.plegable { display: inline-block; vertical-align: top; width: calc(50% - 5px); margin-bottom: 10px; }
+#almacenScreen > details.plegable[open] { display: block; width: 100%; }
+#almacenScreen > details.plegable > summary { min-height: 44px; padding: 8px 12px; font-size: .95rem; }
+#almacenScreen > .form-container:not(.plegable) { padding: 14px; }
+#almacenScreen .alm-orden { min-width: 0; flex: 1 1 135px; }
+#almacenScreen .alm-msg:empty { display: none; }
+#almacenScreen .alm-estado { margin-bottom: 6px; }
+
+/* Almacén: «Recambios de equipos» solo visible cuando se elige su chip */
+#almacenEquipos:not(.alm-visible) { display: none; }

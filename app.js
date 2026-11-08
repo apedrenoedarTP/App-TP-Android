@@ -1862,6 +1862,21 @@ function _toggleGrupoMant(clave, seccion) {
   _gruposMantAbiertos[clave] = !seccion.classList.contains('eq-collapsed');
 }
 
+// Periodicidad: se pintan 25 por sección y el resto bajo «Ver más»
+const _limiteMant = { prev: 25, tar: 25 };
+function _verMasMant(clave, arr, body, crear) {
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'button'; btn.style.cssText = 'width:100%;margin-top:8px';
+  const pintarBtn = () => { btn.textContent = 'Ver más (' + (arr.length - _limiteMant[clave]) + ' restantes)'; };
+  pintarBtn();
+  btn.onclick = () => {
+    const desde = _limiteMant[clave]; _limiteMant[clave] += 25;
+    arr.slice(desde, _limiteMant[clave]).forEach(m => crear(m, body));
+    if (_limiteMant[clave] >= arr.length) btn.remove(); else { pintarBtn(); body.appendChild(btn); }
+  };
+  body.appendChild(btn);
+}
+
 async function actualizarListaMantenimientos() {
   const listaDiv = document.getElementById('listaMantenimientosPeriodicos');
   if (!listaDiv) return;
@@ -1881,7 +1896,7 @@ async function actualizarListaMantenimientos() {
   const inputFiltro = buscadorDiv.querySelector('#filtroMantenimientos');
   inputFiltro.value = _filtroMantenimientosTexto;
   inputFiltro.addEventListener('input', (e) => {
-    _filtroMantenimientosTexto = e.target.value;
+    _filtroMantenimientosTexto = e.target.value; _limiteMant.prev = _limiteMant.tar = 25;
     const cursorPos = e.target.selectionStart;
     actualizarListaMantenimientos();
     const nuevoInput = document.getElementById('filtroMantenimientos');
@@ -1914,6 +1929,14 @@ async function actualizarListaMantenimientos() {
     const div = document.createElement('div');
     div.className = 'pending-record' + (vencido ? ' overdue' : '');
     div.dataset.id = m.id;
+    // Una sola tarjeta abierta a la vez; al abrir, se coloca justo bajo la cabecera fija
+    div.addEventListener('click', e => {
+      if (!e.target.closest('.equipo-record-header')) return;
+      const det = div.querySelector('.eq-detail');
+      if (!det || det.classList.contains('eq-detail-open')) return;
+      body.querySelectorAll('.eq-detail-open').forEach(x => x.classList.remove('eq-detail-open'));
+      setTimeout(() => div.scrollIntoView({ block: 'start', behavior: 'smooth' }), 0);
+    }, true);
     div.innerHTML = `
       <div class="equipo-record-header" onclick="this.nextElementSibling.classList.toggle('eq-detail-open')">
         <strong>${_h(titulo)}</strong>
@@ -1984,7 +2007,7 @@ async function actualizarListaMantenimientos() {
   preventivos
     .slice()
     .sort((a, b) => _ordenVencidosPrimero(a, b, a.equipo, b.equipo))
-    .forEach(m => crearCardMantenimiento(m, bodyPrev));
+    .forEach((m, i, arr) => { if (i < _limiteMant.prev) crearCardMantenimiento(m, bodyPrev); else if (i === _limiteMant.prev) _verMasMant('prev', arr, bodyPrev, crearCardMantenimiento); });
 
   // ── BLOQUE 2: Trabajos Periódicos ─────────────────────────────────────────
   const vencTar = tareas.filter(esMantenimientoVencido).length;
@@ -2007,7 +2030,7 @@ async function actualizarListaMantenimientos() {
   tareas
     .slice()
     .sort((a, b) => _ordenVencidosPrimero(a, b, a.equipo || a.accion, b.equipo || b.accion))
-    .forEach(m => crearCardMantenimiento(m, bodyTar));
+    .forEach((m, i, arr) => { if (i < _limiteMant.tar) crearCardMantenimiento(m, bodyTar); else if (i === _limiteMant.tar) _verMasMant('tar', arr, bodyTar, crearCardMantenimiento); });
 }
 
 async function actualizarListaEquipos(reiniciar) {
@@ -3508,7 +3531,40 @@ async function editarEquipo(index) {
   _toggleEditForm(`edit-equipo-${index}`);
 }
 
+// Quita un equipo de la biblioteca (equiposDb: equipos, modelos y recambios) para que no reaparezca al exportar/importar el CSV
+async function _purgarBiblioteca(nombre) {
+  const edb = window.equiposDb, n = s => String(s || '').trim().toLowerCase(), nom = n(nombre);
+  const tam = () => (edb.equipos || []).length + (edb.modelos || []).length + (edb.recambios || []).length;
+  const antes = tam();
+  const ids = new Set((edb.equipos || []).filter(e => e && n(e.nombre) === nom).map(e => e.id));
+  edb.equipos   = (edb.equipos   || []).filter(e => !(e && n(e.nombre) === nom));
+  edb.modelos   = (edb.modelos   || []).filter(m => !ids.has(m.equipoId));
+  edb.recambios = (edb.recambios || []).filter(r => !ids.has(r.equipoId) && n(r.equipo) !== nom);
+  if (tam() === antes) return;   // no estaba en la biblioteca: sin escrituras
+  try { await Promise.all(['equipos', 'modelos', 'recambios'].map(k => realDb.ref(`instalaciones/${INST()}/equiposDb/${k}`).set(edb[k]))); }
+  catch (e) { console.warn('purga biblioteca:', e); }
+  guardarEquiposDb();
+}
+// Limpieza puntual: quita de la biblioteca los equipos que ya no existen en Equipos (restos de eliminaciones anteriores)
+async function limpiarEquiposFantasma() {
+  const edb = window.equiposDb, n = s => String(s || '').trim().toLowerCase();
+  if (!(edb.equiposGuardados || []).length) { alert('La lista de equipos está vacía; no se limpia nada por seguridad.'); return; }
+  const vivos = new Set(edb.equiposGuardados.map(e => n(e && e.equipo)));
+  const muertos = (edb.equipos || []).filter(e => e && !vivos.has(n(e.nombre)));
+  if (!muertos.length) { alert('No hay equipos fantasma en la biblioteca.'); return; }
+  if (!confirm(`Hay ${muertos.length} equipo(s) en la biblioteca que ya no existen en Equipos:\n\n${muertos.slice(0, 25).map(e => '• ' + e.nombre).join('\n')}${muertos.length > 25 ? '\n…' : ''}\n\n¿Eliminarlos por completo?`)) return;
+  for (const e of muertos) await _purgarBiblioteca(e.nombre);
+  alert(`${muertos.length} equipo(s) eliminados de la biblioteca.`);
+}
+window.limpiarEquiposFantasma = limpiarEquiposFantasma;
+
 async function eliminarEquipo(originalIndex) {
+  const eliminado = (window.equiposDb.equiposGuardados || [])[originalIndex];
+  const antes = (window.equiposDb.equiposGuardados || []).length;
+  await _eliminarEquipoBase(originalIndex);
+  if (eliminado && eliminado.equipo && (window.equiposDb.equiposGuardados || []).length < antes) await _purgarBiblioteca(eliminado.equipo);
+}
+async function _eliminarEquipoBase(originalIndex) {
   if (!confirm('¿Está seguro de eliminar este equipo?')) return;
   try {
     const equipos = [...window.equiposDb.equiposGuardados];
@@ -8387,9 +8443,9 @@ function _cqMontar() {
   function pintarCabecera() {
     const b = baseItems(), n = b.length, bajo = b.filter(bajoMinimo).length;
     const nGrupos = new Set(b.map(grupoDe)).size;
-    const chips = [['ubic', 'Ubicaciones', nGrupos], ['todo', 'Todo', n], ['bajo', 'Por reponer', bajo]];
+    const chips = [['ubic', 'Ubicaciones', nGrupos], ['todo', 'Todo', n], ['bajo', 'Por reponer', bajo], ['equipos', 'Recambios de equipos', window._almEqN == null ? '' : window._almEqN]];
     const cont = el('almacenChips');
-    if (cont) cont.innerHTML = chips.map(c => '<button type="button" class="alm-chip' + (filtro.cat === c[0] ? ' alm-chip-on' : '') + (c[0] === 'bajo' && c[2] ? ' alm-chip-alerta' : '') + '" data-cat="' + c[0] + '">' + c[1] + ' (' + c[2] + ')</button>').join('');
+    if (cont) cont.innerHTML = chips.map(c => '<button type="button" class="alm-chip' + (filtro.cat === c[0] ? ' alm-chip-on' : '') + (c[0] === 'bajo' && c[2] ? ' alm-chip-alerta' : '') + '" data-cat="' + c[0] + '">' + c[1] + (c[2] === '' ? '' : ' (' + c[2] + ')') + '</button>').join('');
     const est = el('almacenEstado');
     if (est) est.textContent = n + ' artículo(s)' + (bajo ? ' · ' + bajo + ' por reponer' : '') + (cargadoEn ? ' · cargado a las ' + new Date(cargadoEn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '');
     const dl = el('almacen-ubicaciones');
@@ -8425,6 +8481,11 @@ function _cqMontar() {
   function pintarLista() {
     const cont = el('almacenLista'); if (!cont) return;
     const orden = el('almacenOrden') && el('almacenOrden').parentElement;
+    // «Recambios de equipos» es una opción más del filtro: solo se ve cuando se selecciona
+    const pe = el('almacenEquipos'), fam = el('almacenFamilia') && el('almacenFamilia').parentElement, modoEq = filtro.cat === 'equipos';
+    if (pe) { pe.classList.toggle('alm-visible', modoEq); if (modoEq) pe.open = true; }
+    if (fam) fam.style.display = modoEq ? 'none' : '';
+    if (modoEq) { if (orden) orden.style.display = 'none'; cont.innerHTML = ''; return; }
     if (!items.length) { if (orden) orden.style.display = 'none'; cont.innerHTML = '<p class="alm-vacio">Aún no hay artículos en el almacén. Añade el primero con «+ Añadir artículo» o importa un CSV.</p>'; return; }
     const buscando = norm(filtro.texto).trim() !== '';
     const porUbic = !buscando && filtro.cat === 'ubic';
@@ -8953,6 +9014,7 @@ function _cqMontar() {
     const cont = el('almacenEquiposLista'), tit = el('almacenEquiposTitulo'); if (!cont || !tit) return;
     const l = visibles(), nb = l.filter(x => bajo(x.r)).length;
     tit.textContent = 'Recambios de equipos (' + l.length + (nb ? ' · ' + nb + ' por reponer' : '') + ')';
+    window._almEqN = l.length; const _ce = document.querySelector('#almacenChips [data-cat="equipos"]'); if (_ce) _ce.textContent = 'Recambios de equipos (' + l.length + ')';
     cont.innerHTML = l.length
       ? l.slice(0, limite).map(htmlFila).join('') + (l.length > limite ? '<button type="button" class="button alm-mas" data-a="mas">Mostrar más (' + (l.length - limite) + ' restantes)</button>' : '')
       : '<p class="alm-vacio">Ningún recambio de equipo' + (buscador() && buscador().value.trim() ? ' coincide con la búsqueda' : ' todavía') + '.</p>';
