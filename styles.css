@@ -1907,3 +1907,32 @@ body.sin-gestion-almacen .alm-edicion select { pointer-events: none; opacity: .7
 
 /* Almacén: «Recambios de equipos» solo visible cuando se elige su chip */
 #almacenEquipos:not(.alm-visible) { display: none; }
+
+/* Fondo: capa fija propia (estable en todas las pantallas y dispositivos, sin depender de background-attachment) */
+body { background: var(--bg); }
+html::before {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 100vh;
+  height: 100lvh;
+  z-index: -1;
+  pointer-events: none;
+  background: url('fondo.jpg') center / cover no-repeat;
+}
+/* Centrado idéntico en todas las pantallas: el hueco del scroll siempre reservado */
+html { scrollbar-gutter: stable; }
+/* Logo como capa independiente: centrado abajo y detrás de todo */
+.background-logo {
+  background-image: url('logo.png');
+  background-position: center bottom;
+  background-repeat: no-repeat;
+  background-size: auto 120px;
+}
+
+/* Logo: detrás de todo el contenido (incluidos los desplegables) y elevado para que se vea una línea de fondo debajo */
+.background-logo {
+  z-index: -1 !important;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+}
+.container { padding-bottom: 134px; }

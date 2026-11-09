@@ -8335,7 +8335,7 @@ function _cqMontar() {
   const quien = () => localStorage.getItem('usuarioNombre') || '';
   const ahora = () => new Date().toISOString();
   const ruta = () => 'instalaciones/' + INST() + '/almacen';
-  const CATS = { recambio: 'Recambio', taller: 'Taller', laboratorio: 'Laboratorio', pintura: 'Pinturas', limpieza: 'Limpieza', otro: 'Otros' };
+  const CATS = { recambio: 'Recambio', taller: 'Taller', laboratorio: 'Laboratorio', pintura: 'Pinturas', limpieza: 'Limpieza', electricidad: 'Electricidad', otro: 'Otros' };
   const uidAct = () => (typeof auth !== 'undefined' && auth.currentUser && auth.currentUser.uid) || localStorage.getItem('usuarioUid') || '';
   const PAGINA = 30;
   const SIN = 'Sin ubicación';
@@ -8764,7 +8764,7 @@ function _cqMontar() {
       const nombre = (c[0] || '').trim(); if (!nombre) return;
       const cantidad = Number(String(c[2] || '0').replace(',', '.')), minimo = Number(String(c[3] || '0').replace(',', '.'));
       nuevos.push({
-        nombre: nombre.slice(0, 80), categoria: /^lab/i.test((c[1] || '').trim()) ? 'laboratorio' : /^pint/i.test((c[1] || '').trim()) ? 'pintura' : /^limp/i.test((c[1] || '').trim()) ? 'limpieza' : /^(tall|cons)/i.test((c[1] || '').trim()) ? 'taller' : /^otro/i.test((c[1] || '').trim()) ? 'otro' : 'recambio',
+        nombre: nombre.slice(0, 80), categoria: /^lab/i.test((c[1] || '').trim()) ? 'laboratorio' : /^pint/i.test((c[1] || '').trim()) ? 'pintura' : /^elec/i.test((c[1] || '').trim()) ? 'electricidad' : /^limp/i.test((c[1] || '').trim()) ? 'limpieza' : /^(tall|cons)/i.test((c[1] || '').trim()) ? 'taller' : /^otro/i.test((c[1] || '').trim()) ? 'otro' : 'recambio',
         pedido: Math.max(0, Number(String(c[7] || '0').replace(',', '.')) || 0),
         cantidad: cantidad >= 0 ? cantidad : 0, minimo: minimo >= 0 ? minimo : 0, unidad: ((c[4] || '').trim() || 'ud').slice(0, 12),
         ubicacion: normUbic(c[5]).slice(0, 30), notas: (c[6] || '').trim().slice(0, 200), actualizado: ahora(), por: quien()
@@ -9908,3 +9908,97 @@ function _cqMontar() {
   const arrancar = () => { montar(); setTimeout(montar, 1500); };          // segunda pasada por si Cambios de turno se monta tarde
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arrancar); else arrancar();
 })();
+
+/* ── Pendientes de administración (todas las instalaciones): avisos en el menú, solo sesión de administrador ──
+   Escucha consultas filtradas (tamaño mínimo) de cada instalación y pinta la franja «Pendientes de revisar». */
+(function () {
+  const S = { ok: false, refs: [], insts: {}, chips: [], n: { compras: {}, sugs: {}, cambios: 0, usuarios: 0 } };
+  const el = id => document.getElementById(id);
+  const esAdmin = () => localStorage.getItem('usuarioRol') === 'admin';
+  const activa = () => localStorage.getItem('instalacionActiva');
+
+  function parar() { S.refs.forEach(r => { try { r.off(); } catch (e) {} }); S.refs = []; S.ok = false; S.n = { compras: {}, sugs: {}, cambios: 0, usuarios: 0 }; }
+  function escuchar(ref, alContar) {
+    S.refs.push(ref);
+    ref.on('value', s => { alContar(s); pintar(); }, e => console.warn('Pendientes:', e.message));
+  }
+  function textoBoton(id, base, n) { const b = el(id); if (b && esAdmin()) { const t = base + (n ? ' (' + n + ')' : ''); if (b.textContent !== t) b.textContent = t; } }
+
+  function lista() {
+    const act = activa(), ids = Object.keys(S.insts).sort((a, b) => (b === act) - (a === act)), varias = ids.length > 1, l = [];
+    ids.forEach(id => {
+      const nom = varias ? ' · ' + (S.insts[id].nombre || id) : '';
+      if (S.n.compras[id]) l.push({ k: 'compras', id, n: S.n.compras[id], t: '🛒 Compras por aceptar' + nom, btn: 'menuCompraBtn' });
+      if (S.n.sugs[id]) l.push({ k: 'sugs', id, n: S.n.sugs[id], t: '💡 Sugerencias' + nom, btn: 'menuCompraBtn' });
+    });
+    if (S.n.cambios) l.push({ k: 'cambios', n: S.n.cambios, t: '🔄 Cambios de turno', btn: 'menuCambiosTurnoBtn' });
+    if (S.n.usuarios) l.push({ k: 'usuarios', n: S.n.usuarios, t: '👥 Usuarios por aprobar' });
+    return l;
+  }
+
+  function pintar() {
+    const menu = el('menuScreen'); if (!menu) return;
+    const act = activa();
+    textoBoton('menuCompraBtn', '🛒 Compra y sugerencias', (S.n.compras[act] || 0) + (S.n.sugs[act] || 0));
+    textoBoton('menuCambiosTurnoBtn', '🔄 Cambios de turno', S.n.cambios);
+    let b = el('adminPendientes');
+    S.chips = (esAdmin() && S.ok) ? lista() : [];
+    if (!S.chips.length) { if (b) b.style.display = 'none'; return; }
+    if (!b) {
+      if (!el('adminPendientesCss')) {
+        const st = document.createElement('style'); st.id = 'adminPendientesCss';
+        st.textContent = '#adminPendientes{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 14px;padding:10px 12px;border-radius:12px;background:var(--bg-card);border:1px solid var(--border,rgba(255,255,255,.12))}' +
+          '#adminPendientes strong{flex:1 1 100%;font-size:.9rem}' +
+          '.adm-pend-chip{min-height:40px;padding:6px 12px;border-radius:999px;border:1px solid #f0a500;background:rgba(240,165,0,.12);color:var(--text-primary);cursor:pointer;font:inherit}' +
+          '.adm-pend-chip b{margin-left:4px;color:#f0a500}';
+        document.head.appendChild(st);
+      }
+      b = document.createElement('div'); b.id = 'adminPendientes';
+      const sub = menu.querySelector('.title-sub');
+      if (sub) sub.insertAdjacentElement('afterend', b); else menu.insertBefore(b, menu.firstChild.nextSibling);
+      b.addEventListener('click', e => {
+        const bt = e.target.closest('.adm-pend-chip'); if (!bt) return;
+        const c = S.chips[Number(bt.dataset.i)]; if (!c) return;
+        if (c.k === 'usuarios') { showScreen('adminUsuariosScreen'); return; }
+        if (c.id && c.id !== activa()) {   // otra instalación: se cambia a ella y se abre el apartado al recargar
+          sessionStorage.setItem('adminPendIr', c.btn);
+          seleccionarInstalacion(c.id, { nombre: (S.insts[c.id] || {}).nombre || c.id }); return;
+        }
+        const btn = el(c.btn); if (btn) btn.click();
+      });
+    }
+    b.style.display = '';
+    b.innerHTML = '<strong>Pendientes de revisar</strong>' +
+      S.chips.map((c, i) => '<button type="button" class="adm-pend-chip" data-i="' + i + '">' + c.t + ' <b>' + c.n + '</b></button>').join('');
+  }
+
+  function irPendiente() {
+    const id = sessionStorage.getItem('adminPendIr'); if (!id) return;
+    sessionStorage.removeItem('adminPendIr');
+    setTimeout(() => { const b = el(id); if (b) b.click(); }, 500);
+  }
+
+  async function iniciar() {
+    const act = activa();
+    if (!esAdmin() || typeof realDb === 'undefined' || !act || act === 'default') { parar(); pintar(); return; }
+    irPendiente();
+    if (S.ok) { pintar(); return; }
+    S.ok = true;
+    try { S.insts = (await realDb.ref('instalacionesMeta').once('value')).val() || {}; } catch (e) { S.insts = {}; }
+    if (!S.ok) return;   // se cerró sesión mientras se leía
+    if (!S.insts[act]) S.insts[act] = { nombre: act };
+    Object.keys(S.insts).forEach(id => {
+      escuchar(realDb.ref(`compra/${id}/compra`).orderByChild('estado').equalTo('solicitada'), s => { S.n.compras[id] = s.numChildren(); });
+      escuchar(realDb.ref(`sugerencias/${id}`).limitToLast(50), s => { let n = 0; s.forEach(c => { if (!(c.val() || {}).revisada) n++; }); S.n.sugs[id] = n; });
+    });
+    escuchar(realDb.ref('cambiosTurno').orderByChild('estado').equalTo('pendiente_admin'), s => { S.n.cambios = s.numChildren(); });
+    escuchar(realDb.ref('usuarios').orderByChild('estado').equalTo('pendiente'), s => { S.n.usuarios = s.numChildren(); });
+  }
+
+  const _sc = window.showScreen;
+  window.showScreen = function (id) {
+    const r = _sc.apply(this, arguments);
+    if (id === 'menuScreen') iniciar(); else if (id === 'mainScreen') { parar(); pintar(); }
+    return r;
+  };
+})();;
