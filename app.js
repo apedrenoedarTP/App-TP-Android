@@ -6223,6 +6223,7 @@ function cuadranteGenerar(cfg) {
   const excl = cfg.excluidos || {};
   const locales = cfg.locales || {};                 // { id: ['YYYY-MM-DD', ...] }
   const manual = cfg.manual || {};                   // { id: { 'YYYY-MM-DD': 'COD' } }  correcciones
+  const tardeSem = cfg.tardeSem || {};   // tarde semanal complementaria: { id: { dia: 0-4 } }
   const grid = {}; operarios.forEach(id => { grid[id] = {}; });
 
   const ini = new Date(Date.UTC(year, 0, 1)), fin = new Date(Date.UTC(year, 11, 31));
@@ -6246,6 +6247,7 @@ function cuadranteGenerar(cfg) {
       }
       if ((locales[id] || []).includes(iso)) c = 'FL';
       if (manual[id] && manual[id][iso]) c = manual[id][iso];
+      if (c === 'M' && wd <= 4 && tardeSem[id] && tardeSem[id].dia === wd) c = 'MT';   // mañana + tarde semanal complementaria
       grid[id][iso] = c;
     });
     if (wd === 5) sabados++;
@@ -6263,9 +6265,9 @@ function cuadranteGenerar(cfg) {
 function cuadranteHoras(gridOperario, p) {
   // p: { horasDia, horasSabado, horasDomingo, horasFT, horasFL, diasVacaciones }
   const cnt = {}; Object.values(gridOperario).forEach(c => { cnt[c] = (cnt[c] || 0) + 1; });
-  const M = cnt.M || 0, T = cnt.T || 0;
+  const M = cnt.M || 0, T = cnt.T || 0, MT = cnt.MT || 0;
   const h = {
-    M: (M - p.diasVacaciones) * p.horasDia, T: T * p.horasDia,
+    M: (M + MT - p.diasVacaciones) * p.horasDia, T: T * p.horasDia, MT: MT * (p.horasTardeSem || 0),
     FS: (cnt.FS || 0) * p.horasSabado, FD: (cnt.FD || 0) * p.horasDomingo,
     FT: (cnt.FT || 0) * p.horasFT, FL: (cnt.FL || 0) * p.horasFL
   };
@@ -6273,54 +6275,73 @@ function cuadranteHoras(gridOperario, p) {
   return { cnt, h };
 }
 
-/* ═══════════ PROPUESTA DE REPARTO DE FESTIVOS Y PUENTES ═══════════
-   Puente = bloque de 2+ festivos nacionales seguidos (Semana Santa, 7-8 dic…) y Navidad (25 dic).
-   - Navidad: la trabaja quien tiene el fin de semana contiguo (como en 2025 y 2026).
-   - Bloques: los hace UNA persona entera; se elige entre quienes aún no han hecho puente en el ciclo actual.
-   - Resto de festivos entre semana: a quien lleve menos días de festivo trabajados.
-   - Los festivos que caen en sábado/domingo los trabaja quien tiene ese fin de semana (ya viene en la rejilla).
+/* ═══════════ PROPUESTA DE REPARTO DE FESTIVOS Y PUENTES (equitativa y con rotación entre años) ═══════════
+   - Puente = racha de 3 o más días libres seguidos (festivos + fines de semana pegados). Pesa más cuanto más larga:
+     cada festivo de una racha de N días pesa ×(1 + 0,25·(N−2)); una racha de 4 pesa más que una de 3.
+   - Carga de cada operario = peso de los festivos trabajados (FT, incluidos los de su fin de semana) − peso de los
+     festivos entre semana que le aplican. Cada festivo o bloque seguido se da a quien tiene menos carga, para igualar lo DISFRUTADO.
+   - A igualdad, a quien menos veces lo ha trabajado (histórico por festivo y por puntos de puente, guardado en estado.histFest).
+   - Si la racha incluye un fin de semana que ya trabaja alguien, se prefiere a esa persona (trabaja seguido y los demás descansan).
+   - Un festivo que no aplica a alguien lo trabaja esa persona con normalidad: queda cubierto y no genera FT ni puente.
    estado.puentesCiclo = ids que ya hicieron puente en el ciclo vigente; se reinicia al completarse. */
 function cuadranteProponerFestivos(cfg) {
   const { year, operarios, festivos, grid } = cfg;
-  const excl = cfg.excluidos || {};
+  const excl = cfg.excluidos || {}, estado = cfg.estado || {};
   const aplica = (id, fs) => fs.every(f => !(excl[id] || []).includes(f));
   const cubierto = f => operarios.some(id => (excl[id] || []).includes(f));
-  const puentesCiclo = new Set((cfg.estado && cfg.estado.puentesCiclo) || []);
-  const dias = {}; operarios.forEach(id => { dias[id] = Object.values(grid[id]).filter(c => c === 'FT').length; });
-  const trabajados = {}, puentes = [];
-  const fest = [...festivos].sort();
-  const wdOf = iso => (cqDate(iso).getUTCDay() + 6) % 7;
-  const porOrden = ids => ids.slice().sort((a, b) => dias[a] - dias[b] || operarios.indexOf(a) - operarios.indexOf(b));
-  const dar = (id, fechas, tipo) => { fechas.forEach(f => { (trabajados[f] = trabajados[f] || []).push(id); }); dias[id] += fechas.length; if (tipo) { puentesCiclo.add(id); puentes.push({ fechas, id, tipo }); } };
-  const elegirPuente = (fs) => { const ok = operarios.filter(id => aplica(id, fs)); let c = ok.filter(id => !puentesCiclo.has(id)); if (!c.length) { puentesCiclo.clear(); c = ok; } if (!c.length) c = operarios.slice(); return porOrden(c)[0]; };
-
+  const puentesCiclo = new Set(estado.puentesCiclo || []);
+  const hist = JSON.parse(JSON.stringify(estado.histFest || {}));
+  const fest = [...festivos].sort(), esFest = new Set(fest), wdT = t => (new Date(t).getUTCDay() + 6) % 7, wdOf = iso => wdT(cqDate(iso).getTime()), pas = _cqPascua(year);
+  const libre = t => wdT(t) >= 5 || esFest.has(cqIso(new Date(t)));
+  const limites = f => { const t = cqDate(f).getTime(); let a = t, b = t; while (libre(a - CQ_MS)) a -= CQ_MS; while (libre(b + CQ_MS)) b += CQ_MS; return [a, b]; };
+  const racha = f => { const [a, b] = limites(f); return Math.round((b - a) / CQ_MS) + 1; };
+  const clave = iso => { const off = Math.round((cqDate(iso) - pas) / CQ_MS); return (off >= -3 && off <= 1) ? 'pascua' + (off >= 0 ? '+' : '') + off : iso.slice(5); };
+  const BASE = { '01-01': 1.5, '12-25': 1.5, 'pascua-2': 1.5 };
+  const peso = f => (BASE[clave(f)] || 1) * (1 + 0.25 * Math.max(0, racha(f) - 2));
+  const rot = (k, id) => ((hist[k] || {})[id] || 0), ptsPuente = id => rot('_puentes', id);
   const entreSemana = fest.filter(f => wdOf(f) <= 4);
-  // 1) Navidad: quien tiene el fin de semana contiguo
-  const nav = `${year}-12-25`;
+  const trabajados = {}, puentes = [], carga = {}, dias = {};
+  operarios.forEach(id => {
+    const ft = Object.keys(grid[id] || {}).filter(d => grid[id][d] === 'FT');
+    dias[id] = ft.length;
+    carga[id] = ft.reduce((a, d) => a + peso(d), 0) - entreSemana.filter(f => aplica(id, [f])).reduce((a, f) => a + peso(f), 0);
+  });
+  const LAM = { '01-01': 2, '12-25': 2, 'pascua-2': 2, 'pascua-3': 2, 'pascua+1': 1.5, '01-06': 1.5 };   // cuánto pesa haber trabajado ya ese festivo (rotación entre años)
+  const puntos = (id, fs, pref, esPuente) => carga[id] + fs.reduce((s, f) => s + (LAM[clave(f)] || 0.75) * rot(clave(f), id), 0) + (id === pref ? -0.8 : 0) + (esPuente ? (puentesCiclo.has(id) ? 0.5 : 0) + 0.5 * ptsPuente(id) : 0);
+  const elegir = (fs, pref, esPuente) => {
+    let c = operarios.filter(id => aplica(id, fs)); if (!c.length) c = operarios.slice();
+    if (esPuente) { let libres = c.filter(id => !puentesCiclo.has(id)); if (!libres.length) { puentesCiclo.clear(); libres = c; } c = libres; }
+    return c.slice().sort((a, b) => puntos(a, fs, pref, esPuente) - puntos(b, fs, pref, esPuente) || operarios.indexOf(a) - operarios.indexOf(b))[0];
+  };
+  const dar = (id, fechas, L) => {
+    fechas.forEach(f => { (trabajados[f] = trabajados[f] || []).push(id); carga[id] += peso(f); dias[id]++; });
+    if (L >= 3) { puentesCiclo.add(id); puentes.push({ fechas, id, tipo: 'puente de ' + L + ' días', dias: L }); (hist._puentes = hist._puentes || {})[id] = ptsPuente(id) + (L - 2); }
+  };
+
   const usados = new Set(entreSemana.filter(cubierto));
-  if (entreSemana.includes(nav) && !usados.has(nav)) {
-    const wd = wdOf(nav), sab = new Date(cqDate(nav).getTime() + (5 - wd) * CQ_MS), isoS = cqIso(sab);
-    const delFinde = operarios.find(o => grid[o][isoS] === 'FS');
-    // Si quien tiene el fin de semana contiguo aún no ha hecho puente en este ciclo, se queda con Navidad;
-    // si ya lo hizo, pasa al siguiente pendiente (así no se repite puente antes de completar el ciclo).
-    const id = (delFinde && !puentesCiclo.has(delFinde) && aplica(delFinde, [nav])) ? delFinde : elegirPuente([nav]);
-    dar(id, [nav], 'navidad'); usados.add(nav);
-  }
-  // 2) Bloques de festivos seguidos
   const bloques = []; let act = [];
   entreSemana.forEach(f => { if (usados.has(f)) return; if (act.length && (cqDate(f) - cqDate(act[act.length - 1])) === CQ_MS) act.push(f); else { if (act.length) bloques.push(act); act = [f]; } });
   if (act.length) bloques.push(act);
-  bloques.filter(b => b.length >= 2).forEach(b => { dar(elegirPuente(b), b, 'bloque'); b.forEach(f => usados.add(f)); });
-  // 3) Festivos sueltos entre semana: reparto equilibrado
-  entreSemana.filter(f => !usados.has(f)).forEach(f => { const cand = operarios.filter(id => aplica(id, [f])); dar(porOrden(cand.length ? cand : operarios)[0], [f], null); });
-  return { festivosTrabajados: trabajados, puentes, estado: { puentesCiclo: [...puentesCiclo] }, diasPorOperario: dias };
+  const items = bloques.map(fs => {
+    const L = racha(fs[0]), [a, b] = limites(fs[0]); let pref = null;
+    if (L >= 3) for (let t = a; t <= b && !pref; t += CQ_MS) if (wdT(t) >= 5) pref = operarios.find(o => ['FS', 'FD', 'FT'].includes((grid[o] || {})[cqIso(new Date(t))])) || null;
+    return { fs, L, pref };
+  });
+  // Primero los más pesados (puentes largos y festivos señalados), luego el resto
+  items.sort((x, y) => y.fs.reduce((s, f) => s + peso(f), 0) - x.fs.reduce((s, f) => s + peso(f), 0) || y.fs.length - x.fs.length || x.fs[0].localeCompare(y.fs[0]));
+  items.forEach(it => { const id = elegir(it.fs, it.pref, it.L >= 3); dar(id, it.fs, it.L); it.fs.forEach(f => usados.add(f)); });
+  // Histórico por festivo para rotar entre años (cuenta todos los FT del año, también los de fin de semana)
+  const suma = (f, id) => { const k = clave(f); (hist[k] = hist[k] || {})[id] = rot(k, id) + 1; };
+  operarios.forEach(id => Object.keys(grid[id] || {}).filter(d => grid[id][d] === 'FT').forEach(d => suma(d, id)));
+  Object.keys(trabajados).forEach(f => trabajados[f].forEach(id => suma(f, id)));
+  return { festivosTrabajados: trabajados, puentes, estado: { puentesCiclo: [...puentesCiclo], histFest: hist }, diasPorOperario: dias };
 }
 
 
 const CQ_BASE   = 'cuadrante';
 const CQ_MESES  = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 const CQ_DIASEM = ['L','M','X','J','V','S','D'];
-const CQ_CODIGOS = { M:'Mañana', T:'Tarde', L:'Libre', FS:'Sábado', FD:'Domingo', FT:'Festivo trabajado', FL:'Festivo local' };
+const CQ_CODIGOS = { M:'Mañana', T:'Tarde', MT:'Mañana + tarde', L:'Libre', FS:'Sábado', FD:'Domingo', FT:'Festivo trabajado', FL:'Festivo local' };
 const CQ_HORAS_DEF = { horasDia:7.25, horasSabado:5, horasDomingo:5, horasFT:5, horasFL:0, diasVacaciones:23, convenio:1720 };
 const CQ_HORAS_ETQ = { horasDia:'Horas día L-V (mañana/tarde)', horasSabado:'Horas sábado', horasDomingo:'Horas domingo', horasFT:'Horas festivo trabajado', horasFL:'Horas festivo local', diasVacaciones:'Días de vacaciones a descontar', convenio:'Horas del convenio' };
 let _cq = { usuarios: [], cacheMenu: null, config: null, indice: [], pub: {}, docs: {}, anio: null, mes: 0, filtro: '', borrador: null, cfgEdit: null, festivosEdit: [], excl: {}, tab: 'consulta', montado: false };
@@ -6338,7 +6359,7 @@ function _cqPascua(y) {
 }
 function _cqMsg(texto, ok) {
   const el = document.getElementById('cqMensaje'); if (!el) return;
-  el.textContent = texto || ''; el.className = 'cq-mensaje' + (texto ? (ok ? ' cq-ok' : ' cq-error') : '');
+  el.textContent = texto || ''; el.className = 'cq-mensaje' + (texto ? (ok === 'aviso' ? ' cq-aviso' : ok ? ' cq-ok' : ' cq-error') : '');
 }
 function _cqErrorLegible(e) {
   if (e && e.code === 'PERMISSION_DENIED') return 'Firebase no permite acceder a «cuadrante». En las reglas de Realtime Database añade: "cuadrante": { ".read": "auth != null", ".write": "auth != null" }';
@@ -6357,6 +6378,13 @@ function _cqConfigSemilla2026() {
     semilla: { desdeAnio: 2027, finId: id('Chema'), tardeId: id('Chema'), puentesCiclo: ['Soto', 'Fran', 'Alejandro PL'].map(id) }
   };
 }
+/* Perfil de cada operario («calendario a la carta»): fines de semana, festivos, jornada y tarde semanal */
+function _cqPerfil(o) {
+  const lv = !!o.lv, h = parseFloat(String(o.horasDia).replace(',', '.')), th = parseFloat(String(o.tardeHoras).replace(',', '.'));
+  const td = (o.tardeDia === '' || o.tardeDia == null) ? null : Number(o.tardeDia);
+  return { finde: o.finde !== false && !lv, fest: o.fest !== false && !lv, horasDia: h > 0 ? h : null, tardeDia: (td >= 0 && td <= 4) ? td : null, tardeHoras: th > 0 ? th : 0 };
+}
+function _cqParamsOp(p, o) { const f = _cqPerfil(o || {}); return Object.assign({}, p, { horasDia: f.horasDia || p.horasDia, horasTardeSem: f.tardeHoras }); }
 function _cqConfigVacia() { return { operarios: [], puestosFin: [], puestosTarde: [], horas: { ...CQ_HORAS_DEF }, semilla: null }; }
 function _cqNormalizarConfig(c) {
   const s = c.semilla || null;
@@ -6421,18 +6449,49 @@ function _cqProponerFestivosAnio(y) {
 }
 
 /* ── Estado de arranque del año a generar ── */
+/* Puentes y estado de rotación calculados desde el calendario REAL (incluye los cambios hechos a mano tras generar) */
+function _cqPuentesDeDoc(doc) {
+  const fests = new Set((doc.festivos || []).map(f => f.fecha)), y = doc.year, out = [];
+  const libre = t => (new Date(t).getUTCDay() + 6) % 7 >= 5 || fests.has(cqIso(new Date(t)));
+  const racha = iso => { const t = cqDate(iso).getTime(); let a = t, b = t; while (libre(a - CQ_MS)) a -= CQ_MS; while (libre(b + CQ_MS)) b += CQ_MS; return [Math.round((b - a) / CQ_MS) + 1, a]; };
+  (doc.operarios || []).forEach(o => {
+    const porRacha = {};
+    (doc.dias[o.id] || []).forEach((c, i) => {
+      if (c !== 'FT') return;
+      const iso = _cqFechaDeIndice(y, i); if ((cqDate(iso).getUTCDay() + 6) % 7 > 4) return;
+      const r = racha(iso); if (r[0] < 3) return;
+      (porRacha[r[1]] = porRacha[r[1]] || { L: r[0], fechas: [] }).fechas.push(iso);
+    });
+    Object.keys(porRacha).forEach(a => out.push({ id: o.id, fechas: porRacha[a].fechas, dias: porRacha[a].L }));
+  });
+  return out.sort((x, y2) => x.fechas[0].localeCompare(y2.fechas[0]));
+}
+function _cqClaveFest(iso, year) { const off = Math.round((cqDate(iso) - _cqPascua(year)) / CQ_MS); return (off >= -3 && off <= 1) ? 'pascua' + (off >= 0 ? '+' : '') + off : iso.slice(5); }
+function _cqEstadoDeDoc(doc) {
+  const ef = doc.estadoFinal || {};
+  if (!ef.conBase) return { histFest: ef.histFest || {}, puentesCiclo: ef.puentesCiclo || [] };   // año guardado antes de esta versión: se usa lo calculado al generar
+  const hist = JSON.parse(JSON.stringify(ef.histBase || {})), y = doc.year, ops = (doc.operarios || []).filter(o => _cqPerfil(o).fest).map(o => o.id);
+  ops.forEach(id => (doc.dias[id] || []).forEach((c, i) => { if (c !== 'FT') return; const k = _cqClaveFest(_cqFechaDeIndice(y, i), y); (hist[k] = hist[k] || {})[id] = ((hist[k] || {})[id] || 0) + 1; }));
+  const ciclo = new Set(ef.cicloBase || []);
+  _cqPuentesDeDoc(doc).filter(p => ops.includes(p.id)).forEach(p => { if (ops.every(id => ciclo.has(id))) ciclo.clear(); ciclo.add(p.id); (hist._puentes = hist._puentes || {})[p.id] = ((hist._puentes || {})[p.id] || 0) + (p.dias - 2); });
+  return { histFest: hist, puentesCiclo: [...ciclo].filter(id => ops.includes(id)) };
+}
 async function _cqEstadoInicial(year) {
   const cfg = _cq.config;
   const prev = await _cqCargarAnio(year - 1);
   if (prev && prev.estadoFinal && prev.estadoFinal.finId) {
     const posFin = cfg.puestosFin.indexOf(prev.estadoFinal.finId), posTarde = cfg.puestosTarde.indexOf(prev.estadoFinal.tardeId);
-    if (posFin >= 0 && posTarde >= 0) return { posFin, posTarde, puentesCiclo: (prev.estadoFinal.puentesCiclo || []).filter(id => cfg.operarios.some(o => o.id === id)), origen: 'continúa desde ' + (year - 1) };
+    if (posFin >= 0 && posTarde >= 0) {
+      // Si el año anterior se guardó con una versión sin datos de base y fue el primero desde el punto de partida, la base es vacía
+      const ed = _cqEstadoDeDoc((prev.estadoFinal.conBase || !(cfg.semilla && Number(cfg.semilla.desdeAnio) === year - 1)) ? prev : { ...prev, estadoFinal: { ...prev.estadoFinal, conBase: true, histBase: {}, cicloBase: cfg.semilla.puentesCiclo || [] } });
+      return { posFin, posTarde, puentesCiclo: ed.puentesCiclo.filter(id => cfg.operarios.some(o => o.id === id)), histFest: ed.histFest, origen: 'continúa desde ' + (year - 1) };
+    }
   }
   const s = cfg.semilla;
   if (s && Number(s.desdeAnio) === year) {
     const posFin = cfg.puestosFin.indexOf(s.finId), posTarde = cfg.puestosTarde.indexOf(s.tardeId);
     if (posFin < 0 || posTarde < 0) throw new Error('El punto de partida de Configuración no coincide con los puestos actuales. Revísalo.');
-    return { posFin, posTarde, puentesCiclo: (s.puentesCiclo || []).filter(id => cfg.operarios.some(o => o.id === id)), origen: 'punto de partida de Configuración' };
+    return { posFin, posTarde, puentesCiclo: (s.puentesCiclo || []).filter(id => cfg.operarios.some(o => o.id === id)), histFest: {}, origen: 'punto de partida de Configuración' };
   }
   throw new Error(`No hay punto de partida para ${year}. Guarda antes el año ${year - 1}, o define en Configuración el punto de partida para ${year}.`);
 }
@@ -6444,7 +6503,11 @@ async function _cqGenerar() {
     const cfg = _cq.config, year = parseInt(document.getElementById('cqGenAnio').value, 10);
     if (!(year >= 2000 && year <= 2100)) throw new Error('Año no válido.');
     const ids = cfg.operarios.map(o => o.id);
-    if (ids.length < 2 || cfg.puestosFin.length !== ids.length || !cfg.puestosTarde.length) throw new Error('Configura primero operarios y puestos en la pestaña Configuración.');
+    const perf = {}; cfg.operarios.forEach(o => { perf[o.id] = _cqPerfil(o); });
+    const pjs = cfg.operarios.map(o => _cqPerfil(o).horasDia), pjIguales = pjs.length > 1 && pjs.every(v => v != null && v === pjs[0]);   // la misma jornada en todos = es la general, no un ajuste individual
+    const finIds = ids.filter(id => perf[id].finde), festIds = ids.filter(id => perf[id].fest), tardeSem = {};
+    ids.forEach(id => { if (perf[id].tardeDia != null) tardeSem[id] = { dia: perf[id].tardeDia }; });
+    if (finIds.length < 2 || cfg.puestosFin.length !== finIds.length || !cfg.puestosTarde.length) throw new Error('Configura primero operarios y puestos en la pestaña Configuración.');
     const est = await _cqEstadoInicial(year);
     const hojas = {}; Object.keys(CQ_HORAS_DEF).forEach(k => { const v = parseFloat(String((document.getElementById('cqH_' + k) || {}).value).replace(',', '.')); hojas[k] = isNaN(v) ? CQ_HORAS_DEF[k] : v; });
     const fest = _cq.festivosEdit.filter(f => f.fecha);
@@ -6453,21 +6516,25 @@ async function _cqGenerar() {
     const locales = {};
     ids.forEach(id => { const v = [0, 1, 2].map(k => (document.getElementById(`cqLoc_${id}_${k}`) || {}).value).filter(Boolean); v.forEach(f => { if (f.slice(0, 4) !== String(year)) throw new Error(`Festivo local fuera del año ${year}: ${f}`); }); if (v.length) locales[id] = [...new Set(v)].sort(); });
     const excluidos = {}; ids.forEach(id => { const v = (_cq.excl[id] || []).filter(f => festIso.includes(f)); if (v.length) excluidos[id] = v; });
-    const base = { year, operarios: ids, puestosFin: cfg.puestosFin, posFin0: est.posFin, puestosTarde: cfg.puestosTarde, posTarde0: est.posTarde, festivos: festIso, locales, excluidos };
+    const base = { year, operarios: ids, tardeSem, puestosFin: cfg.puestosFin, posFin0: est.posFin, puestosTarde: cfg.puestosTarde, posTarde0: est.posTarde, festivos: festIso, locales, excluidos };
     const g1 = cuadranteGenerar(base);
-    const rp = cuadranteProponerFestivos({ year, operarios: ids, festivos: festIso, grid: g1.grid, excluidos, estado: { puentesCiclo: est.puentesCiclo } });
+    const rp = cuadranteProponerFestivos({ year, operarios: festIds, festivos: festIso, grid: g1.grid, excluidos, estado: { puentesCiclo: est.puentesCiclo, histFest: est.histFest } });
     const g2 = cuadranteGenerar({ ...base, festivosTrabajados: rp.festivosTrabajados });
     const autor = (typeof _sesionAutor === 'function' ? _sesionAutor() : {}) || {};
     _cq.borrador = {
-      year, operarios: cfg.operarios.map(o => ({ id: o.id, nombre: o.nombre, uid: o.uid || '' })), puestosFin: cfg.puestosFin.slice(), puestosTarde: cfg.puestosTarde.slice(),
+      year, operarios: cfg.operarios.map(o => ({ id: o.id, nombre: o.nombre, uid: o.uid || '', ..._cqPerfil(o), horasDia: (pjIguales || _cqPerfil(o).horasDia === hojas.horasDia) ? null : _cqPerfil(o).horasDia })), puestosFin: cfg.puestosFin.slice(), puestosTarde: cfg.puestosTarde.slice(),
       festivos: fest.map(f => ({ fecha: f.fecha, nombre: f.nombre || '' })), locales, excluidos, dias: _cqDiasDeGrid(g2.grid, year, ids), puentes: rp.puentes,
       estadoInicial: { posFin: est.posFin, posTarde: est.posTarde, puentesCiclo: est.puentesCiclo },
-      estadoFinal: { posFin: g2.estado.posFin, posTarde: g2.estado.posTarde, puentesCiclo: rp.estado.puentesCiclo, finId: cfg.puestosFin[g2.estado.posFin], tardeId: cfg.puestosTarde[g2.estado.posTarde] },
+      estadoFinal: { posFin: g2.estado.posFin, posTarde: g2.estado.posTarde, puentesCiclo: rp.estado.puentesCiclo, histFest: rp.estado.histFest, conBase: true, histBase: est.histFest || {}, cicloBase: est.puentesCiclo || [], finId: cfg.puestosFin[g2.estado.posFin], tardeId: cfg.puestosTarde[g2.estado.posTarde] },
       horas: hojas, generado: new Date().toISOString(), generadoPor: autor.nombre || ''
     };
     _cq.borradorOrigen = est.origen;
     _cqRenderBorrador();
-    _cqMsg(`Borrador de ${year} generado (${est.origen}). Revísalo y pulsa «Guardar año».`, true);
+    const nEntre = festIso.filter(f => (cqDate(f).getUTCDay() + 6) % 7 < 5).length;
+    const exc = ids.map(id => [id, (excluidos[id] || []).length]).filter(x => x[1]).map(x => ((cfg.operarios.find(o => o.id === x[0]) || {}).nombre || x[0]) + ' (' + x[1] + ')');
+    const fuera = cfg.operarios.map(o => { const r = cuadranteHoras(Object.assign({}, _cq.borrador.dias[o.id] || []), _cqParamsOp(hojas, o)); return { n: o.nombre, b: r.h.total - hojas.convenio }; }).filter(x => Math.abs(x.b) > 30).map(x => x.n + ' ' + (x.b > 0 ? '+' : '') + Math.round(x.b) + ' h');
+    const avisos = (!festIso.length ? ' ⚠ No hay ningún festivo: todos los días laborables cuentan como trabajados.' : '') + '' + (fuera.length ? ' ⚠ Horas lejos del convenio: ' + fuera.join(', ') + '. Revisa festivos, vacaciones y horas.' : '');
+    _cqMsg(`Borrador de ${year} generado (${est.origen}). Festivos aplicados: ${festIso.length} (${nEntre} entre semana).` + (exc.length ? ' Excepciones por operario: ' + exc.join(', ') + '.' : '') + (_cq.borrador.operarios.some(o => o.horasDia != null) ? ' Jornada L-V propia (ajuste individual): ' + _cq.borrador.operarios.filter(o => o.horasDia != null).map(o => o.nombre + ' ' + o.horasDia + ' h').join(', ') + '.' : '') + (avisos || ' Horas dentro de ±30 h del convenio.') + ' Revísalo y pulsa «Guardar año».', avisos ? 'aviso' : true);
   } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
 }
 
@@ -6538,11 +6605,11 @@ function _cqFestDisfrutados(doc, id) {
 function _cqRenderResumen(host, doc, filtro) {
   if (!host) return;
   let tot = 0, totBal = 0; const p = doc.horas, nombreDe = id => ((doc.operarios || []).find(o => o.id === id) || {}).nombre || id;
-  const puentesDe = id => (doc.puentes || []).filter(x => x.id === id).map(x => x.fechas.join('+')).join('; ');
+  const puentesCalc = _cqPuentesDeDoc(doc), puentesDe = id => puentesCalc.filter(x => x.id === id).map(x => x.fechas.join('+') + ' (' + x.dias + ' d)').join('; ');
   let h = `<h4 class="cq-sub">Resumen ${doc.year} · horas frente al convenio (${p.convenio} h)</h4><div class="cq-scroll"><table class="cq-tabla cq-resumen"><thead><tr><th class="cq-nombre">Operario</th><th>Mañana</th><th>Tarde</th><th>Sáb</th><th>Dom</th><th>Fest. trab.</th><th>Fest. disfrut.</th><th>Fest. local</th><th>Horas</th><th>Horas de más (+) / menos (−)</th><th>Puentes</th></tr></thead><tbody>`;
   (doc.operarios || []).filter(o => !filtro || o.id === filtro).forEach(o => {
-    const r = cuadranteHoras(Object.assign({}, doc.dias[o.id] || []), p), bal = r.h.total - p.convenio; tot += r.h.total; totBal += bal;
-    h += `<tr><th class="cq-nombre">${_cqEsc(o.nombre)}</th><td>${r.cnt.M || 0}</td><td>${r.cnt.T || 0}</td><td>${r.cnt.FS || 0}</td><td>${r.cnt.FD || 0}</td><td>${r.cnt.FT || 0}</td><td>${_cqFestDisfrutados(doc, o.id)}</td><td>${r.cnt.FL || 0}</td><td><b>${r.h.total.toFixed(2)}</b></td><td class="${bal < 0 ? 'cq-neg' : 'cq-pos'}">${bal > 0 ? '+' : ''}${bal.toFixed(2)}</td><td class="cq-izq">${_cqEsc(puentesDe(o.id)) || '–'}</td></tr>`;
+    const r = cuadranteHoras(Object.assign({}, doc.dias[o.id] || []), _cqParamsOp(p, o)), bal = r.h.total - p.convenio; tot += r.h.total; totBal += bal;
+    h += `<tr><th class="cq-nombre">${_cqEsc(o.nombre)}${_cqPerfil(o).horasDia ? ' <small title="Jornada propia: no sigue el valor general de L-V">(' + _cqPerfil(o).horasDia + ' h propia)</small>' : ''}</th><td>${(r.cnt.M || 0) + (r.cnt.MT || 0)}</td><td>${r.cnt.T || 0}${r.cnt.MT ? ' <small>(+' + r.cnt.MT + ' sem.)</small>' : ''}</td><td>${r.cnt.FS || 0}</td><td>${r.cnt.FD || 0}</td><td>${r.cnt.FT || 0}</td><td>${_cqFestDisfrutados(doc, o.id)}</td><td>${r.cnt.FL || 0}</td><td><b>${r.h.total.toFixed(2)}</b></td><td class="${bal < 0 ? 'cq-neg' : 'cq-pos'}">${bal > 0 ? '+' : ''}${bal.toFixed(2)}</td><td class="cq-izq">${_cqEsc(puentesDe(o.id)) || '–'}</td></tr>`;
   });
   h += `<tr><th class="cq-nombre">Total</th><td colspan="7"></td><td><b>${tot.toFixed(2)}</b></td><td class="${totBal < 0 ? 'cq-neg' : 'cq-pos'}"><b>${totBal > 0 ? '+' : ''}${totBal.toFixed(2)}</b></td><td></td></tr>`;
   host.innerHTML = h + '</tbody></table></div>';
@@ -6654,6 +6721,98 @@ function _cqCargarExcelJS() {
     document.head.appendChild(s);
   });
 }
+/* ── Hoja «Fórmulas» del Excel del cuadrante: datos editables (amarillo) + fórmulas vivas sobre la hoja «Cuadrante» ── */
+function _cqHojaFormulas(wb, doc, wsCuad) {
+  const y = doc.year, p = doc.horas, N = wsCuad.rowCount, n = doc.operarios.length;
+  const rgb = h => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + h } });
+  const bd = { style: 'thin', color: { argb: 'FFBFBFBF' } }, bordes = { top: bd, left: bd, bottom: bd, right: bd };
+  const centro = { horizontal: 'center', vertical: 'middle' }, AMARILLO = 'FFF2CC', AZUL = '1F3A5F';
+  const ws = wb.addWorksheet('Fórmulas');
+  ws.columns = [34, 12, 11, 12, 12, 9, 9, 9, 9, 9, 9, 9, 9, 11, 12, 12, 12, 12, 12, 11, 11, 12, 11, 11, 36].map(w => ({ width: w }));
+  const celda = (ref, valor, o = {}) => { const c = ws.getCell(ref); c.value = valor; c.border = bordes; c.alignment = o.izq ? { vertical: 'middle', wrapText: true } : centro; if (o.amarillo) c.fill = rgb(AMARILLO); if (o.bold) c.font = { bold: true }; if (o.fmt) c.numFmt = o.fmt; return c; };
+  const titulo = (ref, txt) => { const c = ws.getCell(ref); c.value = txt; c.font = { bold: true, size: 12, color: { argb: 'FF' + AZUL } }; };
+  const cab = (fila, vals) => vals.forEach((v, k) => { const c = ws.getCell(fila, 1 + k); c.value = v; c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = rgb(AZUL); c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; c.border = bordes; });
+  const texto = (fila, txt, ult) => { ws.mergeCells(`A${fila}:${ult || 'Y'}${fila}`); const c = ws.getCell('A' + fila); c.value = txt; c.alignment = { wrapText: true, vertical: 'middle' }; };
+  const diasAnio = Math.round((Date.UTC(y, 11, 31) - Date.UTC(y, 0, 1)) / CQ_MS) + 1;
+  const CODS = ['M', 'T', 'MT', 'FS', 'FD', 'FT', 'FL', 'L'], COLS = ['F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'];
+
+  ws.getCell('A1').value = `Hoja de fórmulas · Cuadrante ${y}`; ws.getCell('A1').font = { bold: true, size: 14 };
+  texto(2, 'Las celdas AMARILLAS son datos que puedes modificar. El resto son fórmulas: cuentan los códigos de la hoja «Cuadrante» y calculan horas y balance. Si corriges un código en «Cuadrante», todo se recalcula solo.');
+  ws.getRow(2).height = 34;
+
+  titulo('A4', 'DATOS A RELLENAR (generales)');
+  [['Año', y, 'Año del cuadrante', '0'], ['Horas anuales de convenio', p.convenio, 'Jornada anual que debe cumplir cada operario', '0.00'], ['Días de vacaciones', p.diasVacaciones, 'Se descuentan de las mañanas', '0'],
+   ['Horario base: horas de jornada L-V', p.horasDia, 'Valor por defecto; cada operario puede tener el suyo en la tabla de abajo', '0.00'], ['Horas de sábado trabajado', p.horasSabado, 'Código FS', '0.00'], ['Horas de domingo trabajado', p.horasDomingo, 'Código FD', '0.00'],
+   ['Horas de festivo trabajado', p.horasFT, 'Código FT', '0.00'], ['Horas de festivo local', p.horasFL, 'Código FL (0 = no suma horas)', '0.00']].forEach((f, k) => {
+    const r = 5 + k; celda('A' + r, f[0], { izq: true, bold: true }); celda('B' + r, f[1], { amarillo: true, fmt: f[3] }); ws.mergeCells(`C${r}:H${r}`); celda('C' + r, f[2], { izq: true });
+  });
+  celda('A13', 'Días del año', { izq: true, bold: true }); celda('B13', { formula: 'DATE($B$5,12,31)-DATE($B$5,1,1)+1', result: diasAnio }); ws.mergeCells('C13:H13'); celda('C13', 'Calculado: 365 o 366', { izq: true });
+
+  titulo('A15', 'IDENTIFICACIÓN DE TURNOS (códigos de la hoja «Cuadrante»)');
+  cab(16, ['Código', 'Significado', 'Horas por día']);
+  const tasa = { M: p.horasDia, T: p.horasDia, MT: p.horasDia, FS: p.horasSabado, FD: p.horasDomingo, FT: p.horasFT, FL: p.horasFL, L: 0 };
+  [['M', 'Mañana', '$B$8'], ['T', 'Tarde (semana completa)', '$B$8'], ['MT', 'Mañana + tarde semanal (la tarde suma sus horas aparte)', '$B$8'], ['FS', 'Sábado trabajado', '$B$9'], ['FD', 'Domingo trabajado', '$B$10'], ['FT', 'Festivo trabajado', '$B$11'], ['FL', 'Festivo local', '$B$12'], ['L', 'Libre', null]].forEach((c, k) => {
+    const r = 17 + k; celda('A' + r, c[0], { bold: true }); celda('B' + r, c[1], { izq: true }); ws.mergeCells(`B${r}:B${r}`); celda('C' + r, c[2] ? { formula: c[2], result: tasa[c[0]] } : 0, { fmt: '0.00' });
+  });
+
+  const F0 = 27, R0 = 28, RN = R0 + n - 1, RT = RN + 1;
+  titulo('A26', 'RESUMEN POR OPERARIO (perfil en amarillo; los códigos de la cabecera también se pueden cambiar)');
+  cab(F0, ['Operario', 'Fines de semana', 'Festivos', 'Jornada L-V (h)', 'Tarde semanal (h)', '', '', '', '', '', '', '', '', 'Días contados', 'Horas mañanas', 'Horas tardes', 'Horas tarde semanal', 'Horas sábados', 'Horas domingos', 'Horas FT', 'Horas FL', 'Total horas', 'Convenio', 'Balance', 'Control']);
+  CODS.forEach((c, k) => celda(COLS[k] + F0, c, { amarillo: true, bold: true }));
+  doc.operarios.forEach((o, i) => {
+    const r = R0 + i, pf = _cqPerfil(o), arr = doc.dias[o.id] || [], cnt = {}; arr.forEach(c => { cnt[c] = (cnt[c] || 0) + 1; });
+    const v = k => cnt[CODS[k]] || 0, jor = pf.horasDia || p.horasDia;
+    const hM = (v(0) + v(2) - p.diasVacaciones) * jor, hT = v(1) * jor, hTS = v(2) * pf.tardeHoras, hS = v(3) * p.horasSabado, hD = v(4) * p.horasDomingo, hF = v(5) * p.horasFT, hL = v(6) * p.horasFL, tot = hM + hT + hTS + hS + hD + hF + hL;
+    const ctrl = arr.length !== diasAnio ? 'REVISAR: días' : (!pf.finde && (v(3) + v(4)) > 0 ? 'REVISAR: fin de semana' : (!pf.finde && !pf.fest && v(5) > 0 ? 'REVISAR: festivo' : 'OK'));
+    celda('A' + r, o.nombre, { izq: true, bold: true }); celda('B' + r, pf.finde ? 'Sí' : 'No', { amarillo: true }); celda('C' + r, pf.fest ? 'Sí' : 'No', { amarillo: true });
+    celda('D' + r, jor, { amarillo: true, fmt: '0.00' }); celda('E' + r, pf.tardeHoras, { amarillo: true, fmt: '0.00' });
+    COLS.forEach((L, k) => celda(L + r, { formula: `SUMPRODUCT((Cuadrante!$A$1:$A$${N}=$A${r})*(Cuadrante!$B$1:$AF$${N}=${L}$${F0}))`, result: v(k) }));
+    celda('N' + r, { formula: `SUM(F${r}:M${r})`, result: arr.length });
+    [['O', `(F${r}+H${r}-$B$7)*D${r}`, hM], ['P', `G${r}*D${r}`, hT], ['Q', `H${r}*E${r}`, hTS], ['R', `I${r}*$B$9`, hS], ['S', `J${r}*$B$10`, hD], ['T', `K${r}*$B$11`, hF], ['U', `L${r}*$B$12`, hL], ['V', `SUM(O${r}:U${r})`, tot], ['W', '$B$6', p.convenio], ['X', `V${r}-W${r}`, tot - p.convenio]]
+      .forEach(a => celda(a[0] + r, { formula: a[1], result: a[2] }, { fmt: a[0] === 'X' ? '+0.00;-0.00;0.00' : '0.00', bold: a[0] === 'V' || a[0] === 'X' }));
+    celda('Y' + r, { formula: `IF(N${r}<>$B$13,"REVISAR: días",IF(AND(B${r}="No",I${r}+J${r}>0),"REVISAR: fin de semana",IF(AND(B${r}="No",C${r}="No",K${r}>0),"REVISAR: festivo","OK")))`, result: ctrl }, { izq: true });
+  });
+  celda('A' + RT, 'Total', { bold: true });
+  'FGHIJKLMNOPQRSTUVX'.split('').forEach(L => { let s = 0; doc.operarios.forEach((o, i) => { const c = ws.getCell(L + (R0 + i)).value; s += (c && c.result) || 0; }); celda(L + RT, { formula: `SUM(${L}${R0}:${L}${RN})`, result: s }, { bold: true, fmt: L >= 'O' ? '0.00' : '0' }); });
+
+  let r = RT + 3;
+  titulo('A' + r, 'FESTIVOS NACIONALES / AUTONÓMICOS (datos a rellenar)'); r++;
+  cab(r, ['Fecha', 'Día', 'Festivo']); r++;
+  const f0 = r, fests = doc.festivos || [], DS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+  fests.forEach(f => {
+    const d = cqDate(f.fecha), wd = (d.getUTCDay() + 6) % 7;
+    celda('A' + r, d, { amarillo: true, fmt: 'dd/mm/yyyy' });
+    celda('B' + r, { formula: `CHOOSE(WEEKDAY(A${r},2),"Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo")`, result: DS[wd] });
+    ws.mergeCells(`C${r}:H${r}`); celda('C' + r, f.nombre || '', { izq: true, amarillo: true }); r++;
+  });
+  if (fests.length) {
+    const fN = r - 1, entre = fests.filter(f => (cqDate(f.fecha).getUTCDay() + 6) % 7 < 5).length;
+    celda('A' + r, { formula: `"Total: "&COUNT(A${f0}:A${fN})&" · entre semana: "&SUMPRODUCT(--(WEEKDAY(A${f0}:A${fN},2)<6))`, result: `Total: ${fests.length} · entre semana: ${entre}` }, { izq: true, bold: true }); ws.mergeCells(`A${r}:H${r}`); r++;
+  }
+  r += 1; titulo('A' + r, 'FESTIVOS LOCALES POR OPERARIO (datos a rellenar)'); r++;
+  cab(r, ['Operario', 'Local 1', 'Local 2', 'Local 3', 'Introducidos', 'FL en cuadrante', 'Control']); r++;
+  doc.operarios.forEach((o, i) => {
+    const loc = ((doc.locales || {})[o.id] || []), sr = R0 + i, fl = (doc.dias[o.id] || []).filter(c => c === 'FL').length;
+    celda('A' + r, o.nombre, { izq: true, bold: true });
+    ['B', 'C', 'D'].forEach((L, k) => celda(L + r, loc[k] ? cqDate(loc[k]) : null, { amarillo: true, fmt: 'dd/mm/yyyy' }));
+    celda('E' + r, { formula: `COUNT(B${r}:D${r})`, result: loc.length }); celda('F' + r, { formula: `L${sr}`, result: fl });
+    celda('G' + r, { formula: `IF(F${r}=E${r},"OK","REVISAR")`, result: fl === loc.length ? 'OK' : 'REVISAR' }); r++;
+  });
+  r += 1; titulo('A' + r, 'FESTIVOS NACIONALES QUE NO APLICAN A CADA OPERARIO (informativo)'); r++;
+  doc.operarios.forEach(o => { celda('A' + r, o.nombre, { izq: true, bold: true }); ws.mergeCells(`B${r}:H${r}`); celda('B' + r, ((doc.excluidos || {})[o.id] || []).map(f => f.split('-').reverse().join('/')).join(', ') || '–', { izq: true }); r++; });
+
+  r += 1; titulo('A' + r, 'REGLAS APLICADAS AL GENERAR EL CUADRANTE'); r++;
+  ['Mañana (M): lunes a viernes, salvo la semana de tarde y los festivos.',
+   'Tarde (T): una persona cada semana (lunes a viernes), rotando por puestos. Solo entran quienes están en «Puestos del turno de tarde».',
+   'Mañana + tarde semanal (MT): operarios con una tarde fija a la semana; ese día hacen su mañana y suman las horas de esa tarde aparte.',
+   'Fin de semana (FS sábado / FD domingo): una persona cada fin de semana, rotando entre quienes tienen «Fines de semana» = Sí; el resto, libre (L).',
+   'Festivos nacionales y autonómicos entre semana: libres (L) para todos, salvo quien los trabaja (FT) entre quienes tienen «Festivos» = Sí. Si un festivo cae en el fin de semana de alguien, lo trabaja.',
+   'Festivo local (FL): día de fiesta propio de cada operario.',
+   'Horas: mañanas = (M + MT − días de vacaciones) × jornada L-V del operario; tardes = T × jornada; tarde semanal = MT × sus horas; sábados, domingos, FT y FL = nº de días × sus horas. Balance = total − convenio.'
+  ].forEach(t => { texto(r, '• ' + t); r++; });
+  wb.calcProperties = Object.assign({}, wb.calcProperties, { fullCalcOnLoad: true });
+}
+
 async function cuadranteExportarExcel() {
   try {
     const doc = await _cqCargarAnio(_cq.anio); if (!doc) return _cqMsg('No hay ningún año seleccionado.', false);
@@ -6662,7 +6821,7 @@ async function cuadranteExportarExcel() {
     const rgb = h => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + h } });
     const bd = { style: 'thin', color: { argb: 'FFBFBFBF' } }, bordes = { top: bd, left: bd, bottom: bd, right: bd };
     const centro = { horizontal: 'center', vertical: 'middle' };
-    const COL = { M: 'DCE8FD', T: 'FCE2B6', FS: 'E5CCFD', FD: 'E5CCFD', FT: 'F9B8B8', FL: 'C8F0D7' };
+    const COL = { M: 'DCE8FD', MT: 'EAE3D2', T: 'FCE2B6', FS: 'E5CCFD', FD: 'E5CCFD', FT: 'F9B8B8', FL: 'C8F0D7' };
     const DS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
     const fmt = iso => iso.split('-').reverse().join('/');
     const wdDe = iso => (cqDate(iso).getUTCDay() + 6) % 7;
@@ -6705,9 +6864,9 @@ async function cuadranteExportarExcel() {
     const tr = wr.addRow([`Resumen ${y} · horas frente al convenio (${p.convenio} h)`]); tr.getCell(1).font = { bold: true, size: 13 }; wr.addRow([]);
     cabecera(wr, ['Operario', 'Mañanas', 'Tardes', 'Sábados', 'Domingos', 'Fest. trabajados', 'Fest. disfrutados', 'Fest. locales', 'Horas', 'Convenio', 'Balance', 'Puentes']);
     doc.operarios.forEach((o, i) => {
-      const r = cuadranteHoras(Object.assign({}, doc.dias[o.id] || []), p), bal = Math.round((r.h.total - p.convenio) * 100) / 100;
-      const pu = (doc.puentes || []).filter(x => x.id === o.id).map(x => x.fechas.map(fmt).join(' + ')).join('; ') || '–';
-      const row = wr.addRow([o.nombre, r.cnt.M || 0, r.cnt.T || 0, r.cnt.FS || 0, r.cnt.FD || 0, r.cnt.FT || 0, _cqFestDisfrutados(doc, o.id), r.cnt.FL || 0, Math.round(r.h.total * 100) / 100, p.convenio, bal, pu]);
+      const r = cuadranteHoras(Object.assign({}, doc.dias[o.id] || []), _cqParamsOp(p, o)), bal = Math.round((r.h.total - p.convenio) * 100) / 100;
+      const pu = _cqPuentesDeDoc(doc).filter(x => x.id === o.id).map(x => x.fechas.map(fmt).join(' + ') + ' (' + x.dias + ' d)').join('; ') || '–';
+      const row = wr.addRow([o.nombre, (r.cnt.M || 0) + (r.cnt.MT || 0), r.cnt.T || 0, r.cnt.FS || 0, r.cnt.FD || 0, r.cnt.FT || 0, _cqFestDisfrutados(doc, o.id), r.cnt.FL || 0, Math.round(r.h.total * 100) / 100, p.convenio, bal, pu]);
       row.eachCell((c, n) => { c.border = bordes; c.alignment = (n === 1 || n === 12) ? { vertical: 'middle', wrapText: true } : centro; if (i % 2) c.fill = rgb('F6F7FA'); });
       row.getCell(1).font = { bold: true }; row.getCell(9).font = { bold: true }; row.getCell(9).numFmt = '0.00';
       row.getCell(11).font = { bold: true, color: { argb: bal < 0 ? 'FFC62828' : 'FF2E7D32' } }; row.getCell(11).numFmt = '+0.00;-0.00;0.00';
@@ -6726,6 +6885,7 @@ async function cuadranteExportarExcel() {
     doc.operarios.forEach(o => fila2(o.nombre, ((doc.locales || {})[o.id] || []).map(fmt).join(', ') || '–'));
     sub('Festivos nacionales que NO aplican a cada operario'); cabecera(wf, ['Operario', 'Fechas', '']);
     doc.operarios.forEach(o => fila2(o.nombre, ((doc.excluidos || {})[o.id] || []).map(f => fmt(f) + (festNombre[f] ? ' (' + festNombre[f] + ')' : '')).join(', ') || '–'));
+    _cqHojaFormulas(wb, doc, ws);   // 4.ª hoja: fórmulas y datos a rellenar
 
     const buf = await wb.xlsx.writeBuffer();
     _descargarLocal(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `Cuadrante_${y}.xlsx`);
@@ -6785,10 +6945,21 @@ function _cqRenderFestivosEdit() {
     _cq.festivosEdit.map((f, i) => `<div class="cq-fila"><input type="date" data-f="fest-fecha" data-i="${i}" value="${_cqEsc(f.fecha)}"><input type="text" data-f="fest-nombre" data-i="${i}" value="${_cqEsc(f.nombre)}" placeholder="Nombre del festivo"><button type="button" class="cq-mini" data-act="fest-del" data-i="${i}" aria-label="Quitar">✕</button></div>`).join('');
   _cqRenderExcluidosEdit();
 }
+function _cqExclAviso() {
+  const el = document.getElementById('cqExclAviso'); if (!el) return;
+  const fs = _cq.festivosEdit.map(f => f.fecha).filter(Boolean), n = Object.keys(_cq.excl || {}).reduce((a, k) => a + (_cq.excl[k] || []).filter(f => fs.includes(f)).length, 0);
+  el.innerHTML = n ? '<small style="color:#f0a500">· ' + n + ' sin aplicar a alguien</small>' : '<small style="color:#6b7280">· se aplican a todos</small>';
+}
 function _cqRenderExcluidosEdit() {
+  setTimeout(_cqExclAviso, 0);
   const host = document.getElementById('cqExcluidos'); if (!host || !_cq.config) return;
-  const fest = _cq.festivosEdit.filter(f => f.fecha);
-  host.innerHTML = fest.length ? _cq.config.operarios.map(o => `<div class="cq-fila"><span class="cq-etq">${_cqEsc(o.nombre)}</span>${fest.map(f => `<label style="margin-right:8px"><input type="checkbox" data-f="excl" data-id="${_cqEsc(o.id)}" data-fecha="${_cqEsc(f.fecha)}"${(_cq.excl[o.id] || []).includes(f.fecha) ? ' checked' : ''}> ${_cqEsc(f.nombre || f.fecha)}</label>`).join('')}</div>`).join('') : '<p class="cq-vacio">Añade primero los festivos.</p>';
+  const fest = _cq.festivosEdit.filter(f => f.fecha).sort((a, b) => a.fecha.localeCompare(b.fecha)), ops = _cq.config.operarios;
+  if (!fest.length || ops.length < 2) { host.innerHTML = ''; return; }
+  const aplica = (id, fecha) => !(_cq.excl[id] || []).includes(fecha);
+  host.innerHTML = '<div class="cq-scroll"><table class="cq-tabla" style="min-width:0"><thead><tr><th class="cq-nombre">Festivo</th>' +
+    ops.map(o => `<th><button type="button" class="cq-mini" data-act="excl-col" data-id="${_cqEsc(o.id)}" title="Marcar o desmarcar a ${_cqEsc(o.nombre)} en todos los festivos">${_cqEsc(o.nombre)}</button></th>`).join('') + '</tr></thead><tbody>' +
+    fest.map(f => `<tr><td class="cq-nombre"><button type="button" class="cq-mini" data-act="excl-fila" data-fecha="${_cqEsc(f.fecha)}" title="Marcar o desmarcar a todos en este festivo">${_cqEsc(f.fecha.split('-').reverse().join('/'))}${f.nombre ? ' · ' + _cqEsc(f.nombre) : ''}</button></td>` +
+      ops.map(o => `<td style="text-align:center"><input type="checkbox" data-f="excl" data-id="${_cqEsc(o.id)}" data-fecha="${_cqEsc(f.fecha)}"${aplica(o.id, f.fecha) ? ' checked' : ''} aria-label="${_cqEsc(o.nombre)} · ${_cqEsc(f.fecha)}"></td>`).join('') + '</tr>').join('') + '</tbody></table></div>';
 }
 function _cqRenderLocalesEdit() {
   const host = document.getElementById('cqLocales'); if (!host || !_cq.config) return;
@@ -6812,7 +6983,7 @@ function _cqRenderBorrador() {
   host.innerHTML = `<h4 class="cq-sub">Borrador ${d.year}</h4>
     <div class="cq-barra"><label class="cq-campo">Mes<select id="cqBorMes">${CQ_MESES.map((m, i) => `<option value="${i}">${m}</option>`).join('')}</select></label><button type="button" class="button" data-act="guardar-anio">💾 Guardar año ${d.year}</button></div>
     <div id="cqBorVista"></div><div id="cqBorResumen"></div>
-    <p class="cq-nota">Puentes propuestos: ${(d.puentes || []).map(p => `${_cqEsc(p.fechas.join(' + '))} → <b>${_cqEsc(((d.operarios.find(o => o.id === p.id)) || {}).nombre || p.id)}</b>`).join(' · ') || 'ninguno'}</p>`;
+    <p class="cq-nota">Puentes propuestos: ${(d.puentes || []).map(p => `${_cqEsc(p.fechas.join(' + '))}${p.dias ? ' (' + p.dias + ' días libres seguidos)' : ''} → <b>${_cqEsc(((d.operarios.find(o => o.id === p.id)) || {}).nombre || p.id)}</b>`).join(' · ') || 'ninguno'}</p>`;
   const sel = document.getElementById('cqBorMes'); sel.value = String(_cq.mes);
   _cqRenderMes(document.getElementById('cqBorVista'), d, _cq.mes, '');
   _cqRenderResumen(document.getElementById('cqBorResumen'), d, '');
@@ -6823,11 +6994,11 @@ function _cqRenderConfig() {
   const host = document.getElementById('cqConfig'); if (!host) return;
   const c = _cq.cfgEdit; if (!c) return;
   const opts = (sel, ids) => ids.map(id => { const o = c.operarios.find(x => x.id === id); return o ? `<option value="${_cqEsc(id)}"${id === sel ? ' selected' : ''}>${_cqEsc(o.nombre)}</option>` : ''; }).join('');
-  const todos = c.operarios.map(o => o.id), s = c.semilla || { desdeAnio: new Date().getFullYear() + 1, finId: todos[0], tardeId: (c.puestosTarde[0] || ''), puentesCiclo: [] };
+  const todos = c.operarios.map(o => o.id), conFin = c.operarios.filter(o => _cqPerfil(o).finde).map(o => o.id), s = c.semilla || { desdeAnio: new Date().getFullYear() + 1, finId: conFin[0], tardeId: (c.puestosTarde[0] || ''), puentesCiclo: [] };
   host.innerHTML = `
     <h4 class="cq-sub">Operarios · orden del ciclo de fines de semana</h4>
-    <p class="cq-nota">El orden de esta lista es el orden en que se turnan los fines de semana. Si un puesto lo ocupa otra persona, cambia el nombre en su fila.</p>
-    ${c.operarios.map((o, i) => `<div class="cq-fila"><span class="cq-num">${i + 1}</span><input type="text" data-f="op-nombre" data-i="${i}" value="${_cqEsc(o.nombre)}"><select data-f="op-uid" data-i="${i}" title="Usuario de la app"><option value="">(sin vincular)</option>${_cq.usuarios.map(u => `<option value="${_cqEsc(u.uid)}"${u.uid === o.uid ? ' selected' : ''}>${_cqEsc(u.nombre)}</option>`).join('')}</select><label class="cq-chk"><input type="checkbox" data-f="op-puente" data-id="${_cqEsc(o.id)}"${(s.puentesCiclo || []).includes(o.id) ? ' checked' : ''}> ya hizo puente</label><button type="button" class="cq-mini" data-act="op-up" data-i="${i}" aria-label="Subir">↑</button><button type="button" class="cq-mini" data-act="op-down" data-i="${i}" aria-label="Bajar">↓</button><button type="button" class="cq-mini" data-act="op-del" data-i="${i}" aria-label="Quitar">✕</button></div>`).join('')}
+    <p class="cq-nota">El orden de esta lista es el orden en que se turnan los fines de semana. Si un puesto lo ocupa otra persona, cambia el nombre en su fila. Debajo de cada operario eliges si entra en fines de semana y festivos, su jornada de lunes a viernes y una tarde semanal opcional (por ejemplo, un analista con mañanas de 7 h que completa con una tarde a la semana). Las tardes de semana completa se asignan en «Puestos del turno de tarde».</p>
+    ${c.operarios.map((o, i) => `<div class="cq-fila"><span class="cq-num">${i + 1}</span><input type="text" data-f="op-nombre" data-i="${i}" value="${_cqEsc(o.nombre)}"><select data-f="op-uid" data-i="${i}" title="Usuario de la app"><option value="">(sin vincular)</option>${_cq.usuarios.map(u => `<option value="${_cqEsc(u.uid)}"${u.uid === o.uid ? ' selected' : ''}>${_cqEsc(u.nombre)}</option>`).join('')}</select><label class="cq-chk"><input type="checkbox" data-f="op-puente" data-id="${_cqEsc(o.id)}"${(s.puentesCiclo || []).includes(o.id) ? ' checked' : ''}> ya hizo puente</label><button type="button" class="cq-mini" data-act="op-up" data-i="${i}" aria-label="Subir">↑</button><button type="button" class="cq-mini" data-act="op-down" data-i="${i}" aria-label="Bajar">↓</button><button type="button" class="cq-mini" data-act="op-del" data-i="${i}" aria-label="Quitar">✕</button></div>${(() => { const f = _cqPerfil(o); return `<div class="cq-fila" style="margin:-4px 0 10px 34px;flex-wrap:wrap;gap:12px;align-items:center"><label class="cq-chk"><input type="checkbox" data-f="op-fin" data-i="${i}"${f.finde ? ' checked' : ''}> Fines de semana</label><label class="cq-chk"><input type="checkbox" data-f="op-fest" data-i="${i}"${f.fest ? ' checked' : ''}> Festivos</label><label class="cq-campo" title="Déjalo vacío: usa las horas generales de «Generar año». Rellénalo solo para ajustar a esta persona.">Ajuste jornada L-V (h)<input type="number" step="0.25" min="0" data-f="op-hdia" data-i="${i}" value="${f.horasDia || ''}" placeholder="${_cqEsc((c.horas && c.horas.horasDia) || '')}" style="width:80px"></label><label class="cq-campo">Tarde semanal<select data-f="op-tdia" data-i="${i}"><option value="">— ninguna —</option>${['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes'].map((d, k) => `<option value="${k}"${f.tardeDia === k ? ' selected' : ''}>${d}</option>`).join('')}</select></label><label class="cq-campo">Horas de esa tarde<input type="number" step="0.25" min="0" data-f="op-thor" data-i="${i}" value="${f.tardeHoras || ''}" style="width:80px"></label></div>`; })()}`).join('')}
     <button type="button" class="button" data-act="op-add">+ Añadir operario</button>
     <h4 class="cq-sub">Puestos del turno de tarde (ciclo semanal, en orden)</h4>
     ${c.puestosTarde.map((id, i) => `<div class="cq-fila"><span class="cq-num">${i + 1}</span><select data-f="tarde" data-i="${i}">${opts(id, todos)}</select><button type="button" class="cq-mini" data-act="tarde-del" data-i="${i}" aria-label="Quitar">✕</button></div>`).join('')}
@@ -6836,7 +7007,7 @@ function _cqRenderConfig() {
     <p class="cq-nota">Solo se usa para generar el primer año. Después, cada año continúa desde el anterior guardado.</p>
     <div class="cq-barra">
       <label class="cq-campo">Año a generar<input type="number" data-f="sem" data-k="desdeAnio" value="${_cqEsc(s.desdeAnio)}"></label>
-      <label class="cq-campo">Trabaja el primer fin de semana<select data-f="sem" data-k="finId">${opts(s.finId, todos)}</select></label>
+      <label class="cq-campo">Trabaja el primer fin de semana<select data-f="sem" data-k="finId">${opts(s.finId, conFin)}</select></label>
       <label class="cq-campo">Tiene la tarde la semana del 1 de enero<select data-f="sem" data-k="tardeId">${opts(s.tardeId, c.puestosTarde)}</select></label>
     </div>
     <div class="cq-barra"><button type="button" class="button" data-act="cfg-guardar">💾 Guardar configuración</button><button type="button" class="button" data-act="cfg-semilla">Cargar datos de arranque (cuadrante 2026)</button></div>`;
@@ -6848,13 +7019,17 @@ function _cqLeerConfigEditada() {
   if (c.operarios.some(o => !o.nombre)) throw new Error('Hay operarios sin nombre.');
   if (new Set(c.operarios.map(o => o.nombre.toLowerCase())).size !== c.operarios.length) throw new Error('Hay nombres de operario repetidos.');
   if (!c.puestosTarde.length) throw new Error('Define al menos un puesto de tarde.');
+  if (c.operarios.filter(o => _cqPerfil(o).finde).length < 2) throw new Error('Debe haber al menos 2 operarios con «Fines de semana» marcado.');
+  if (!c.operarios.some(o => _cqPerfil(o).fest)) throw new Error('Al menos un operario debe trabajar festivos.');
+  const sinHoras = c.operarios.find(o => { const f = _cqPerfil(o); return f.tardeDia != null && !(f.tardeHoras > 0); });
+  if (sinHoras) throw new Error('Indica las horas de la tarde semanal de ' + (sinHoras.nombre || 'un operario') + '.');
   if (new Set(c.puestosTarde).size !== c.puestosTarde.length) throw new Error('Un mismo operario aparece dos veces en los puestos de tarde.');
   const s = c.semilla || {};
   const uids = c.operarios.map(o => o.uid).filter(Boolean);
   if (new Set(uids).size !== uids.length) throw new Error('Dos operarios están vinculados al mismo usuario de la app.');
-  return { operarios: c.operarios.map(o => ({ id: o.id, nombre: o.nombre, uid: o.uid || '' })), puestosFin: c.operarios.map(o => o.id), puestosTarde: c.puestosTarde.slice(),
+  return { operarios: c.operarios.map(o => ({ id: o.id, nombre: o.nombre, uid: o.uid || '', ..._cqPerfil(o) })), puestosFin: c.operarios.filter(o => _cqPerfil(o).finde).map(o => o.id), puestosTarde: c.puestosTarde.slice(),
            horas: { ...(_cq.config ? _cq.config.horas : CQ_HORAS_DEF) },
-           semilla: { desdeAnio: parseInt(s.desdeAnio, 10) || (new Date().getFullYear() + 1), finId: s.finId || c.operarios[0].id, tardeId: s.tardeId || c.puestosTarde[0], puentesCiclo: (s.puentesCiclo || []).filter(id => c.operarios.some(o => o.id === id)) } };
+           semilla: { desdeAnio: parseInt(s.desdeAnio, 10) || (new Date().getFullYear() + 1), finId: (c.operarios.find(o => o.id === s.finId && _cqPerfil(o).finde) || c.operarios.find(o => _cqPerfil(o).finde)).id, tardeId: s.tardeId || c.puestosTarde[0], puentesCiclo: (s.puentesCiclo || []).filter(id => c.operarios.some(o => o.id === id)) } };
 }
 async function _cqGuardarConfig() {
   try {
@@ -6927,8 +7102,10 @@ async function _cqClick(ev) {
       catch (e) { _cqMsg(_cqErrorLegible(e), false); }
       break;
     }
-    case 'fest-del': _cq.festivosEdit.splice(i, 1); _cqRenderFestivosEdit(); break;
+    case 'fest-del': _cq.festivosEdit.splice(i, 1); _cqRenderFestivosEdit(); if (_cq.borrador) _cqMsg('Has quitado un festivo: pulsa «Generar año» para recalcular el calendario.', 'aviso'); break;
     case 'fest-add': _cq.festivosEdit.push({ fecha: '', nombre: '' }); _cqRenderFestivosEdit(); break;
+    case 'excl-col': { const id = b.dataset.id, fs = _cq.festivosEdit.filter(f => f.fecha).map(f => f.fecha), todos = fs.every(f => !(_cq.excl[id] || []).includes(f)); _cq.excl[id] = todos ? fs.slice() : []; _cqRenderExcluidosEdit(); break; }
+    case 'excl-fila': { const fe = b.dataset.fecha, ids = _cq.config.operarios.map(o => o.id), todos = ids.every(id => !(_cq.excl[id] || []).includes(fe)); ids.forEach(id => { const q = new Set(_cq.excl[id] || []); todos ? q.add(fe) : q.delete(fe); _cq.excl[id] = [...q]; }); _cqRenderExcluidosEdit(); break; }
     case 'fest-proponer': {
       const y = parseInt(document.getElementById('cqGenAnio').value, 10); if (!(y >= 2000 && y <= 2100)) return _cqMsg('Indica primero el año.', false);
       const p = _cqProponerFestivosAnio(y); _cq.festivosEdit = p.lista; _cqRenderFestivosEdit();
@@ -6948,6 +7125,18 @@ async function _cqClick(ev) {
 }
 function _cqCambio(ev) {
   const t = ev.target, f = t.dataset && t.dataset.f, c = _cq.cfgEdit;
+  if (t.id && t.id.indexOf('cqH_') === 0 && _cq.borrador && _cq.borrador.horas) {   // horas editadas tras generar: se recalcula el resumen al momento
+    const k = t.id.slice(4), v = parseFloat(String(t.value).replace(',', '.'));
+    if (k in _cq.borrador.horas && !isNaN(v) && v >= 0) {
+      const ant = _cq.borrador.horas[k];
+      if (k === 'horasDia') (_cq.borrador.operarios || []).forEach(o => { if (o.horasDia != null && Math.abs(Number(o.horasDia) - ant) < 1e-9) o.horasDia = null; });   // quien tenía la jornada igual a la general, ahora la sigue
+      _cq.borrador.horas[k] = v; _cqRenderBorrador();
+      const prop = k === 'horasDia' ? (_cq.borrador.operarios || []).filter(o => o.horasDia != null).map(o => o.nombre) : [];
+      if (prop.length) _cqMsg('Horas L-V generales actualizadas. No cambian ' + prop.join(', ') + ': tienen jornada propia (se cambia en Configuración, bajo cada operario).', 'aviso');
+    }
+    return;
+  }
+  if (_cq.borrador && (f === 'fest-fecha' || f === 'excl' || (t.id || '').indexOf('cqLoc_') === 0)) _cqMsg('Has cambiado festivos, excepciones o locales: pulsa «Generar año» para recalcular el calendario (el borrador actual no los incluye).', 'aviso');
   if (t.id === 'cqAnio') { _cq.anio = parseInt(t.value, 10) || null; _cqRenderConsulta(); return; }
   if (t.id === 'cqMes') { _cq.mes = parseInt(t.value, 10) || 0; _cqRenderConsulta(); return; }
   if (t.id === 'cqFiltro') { _cq.filtro = t.value; _cqRenderConsulta(); return; }
@@ -6959,9 +7148,13 @@ function _cqCambio(ev) {
   else if (f === 'fest-nombre') { _cq.festivosEdit[i].nombre = t.value; _cqRenderExcluidosEdit(); }
   else if (f === 'op-nombre') c.operarios[i].nombre = t.value;
   else if (f === 'op-uid') c.operarios[i].uid = t.value;
+  else if (f === 'op-fin' || f === 'op-fest') { const op = c.operarios[i], pf = _cqPerfil(op); op.finde = pf.finde; op.fest = pf.fest; delete op.lv; if (f === 'op-fin') { op.finde = t.checked; _cqRenderConfig(); } else op.fest = t.checked; }
+  else if (f === 'op-hdia') c.operarios[i].horasDia = t.value;
+  else if (f === 'op-tdia') c.operarios[i].tardeDia = t.value;
+  else if (f === 'op-thor') c.operarios[i].tardeHoras = t.value;
   else if (f === 'op-puente') { c.semilla = c.semilla || { desdeAnio: new Date().getFullYear() + 1, finId: c.operarios[0].id, tardeId: c.puestosTarde[0], puentesCiclo: [] }; const s = new Set(c.semilla.puentesCiclo || []); t.checked ? s.add(t.dataset.id) : s.delete(t.dataset.id); c.semilla.puentesCiclo = [...s]; }
   else if (f === 'tarde') c.puestosTarde[i] = t.value;
-  else if (f === 'excl') { const s = new Set(_cq.excl[t.dataset.id] || []); t.checked ? s.add(t.dataset.fecha) : s.delete(t.dataset.fecha); _cq.excl[t.dataset.id] = [...s]; }
+  else if (f === 'excl') { const s = new Set(_cq.excl[t.dataset.id] || []); t.checked ? s.delete(t.dataset.fecha) : s.add(t.dataset.fecha); _cq.excl[t.dataset.id] = [...s]; _cqExclAviso(); }
   else if (f === 'sem') { c.semilla = c.semilla || { puentesCiclo: [] }; c.semilla[t.dataset.k] = t.value; }
 }
 
@@ -6983,7 +7176,8 @@ const CQ_CSS = `
 #cuadranteScreen .cq-sub{margin:20px 0 8px;font-family:var(--font-display);letter-spacing:.05em;text-transform:uppercase;font-size:.95rem;color:var(--text-primary)}
 #cuadranteScreen .cq-nota,#cuadranteScreen .cq-vacio{font-size:.82rem;color:var(--text-muted);margin:6px 0 12px}
 #cuadranteScreen .cq-mensaje{margin:0 0 12px;padding:0}
-#cuadranteScreen .cq-mensaje.cq-ok,#cuadranteScreen .cq-mensaje.cq-error{padding:10px 12px;border-radius:var(--radius-md);font-size:.85rem;border:1px solid}
+#cuadranteScreen .cq-mensaje.cq-ok,#cuadranteScreen .cq-mensaje.cq-error,#cuadranteScreen .cq-mensaje.cq-aviso{padding:10px 12px;border-radius:var(--radius-md);font-size:.85rem;border:1px solid}
+#cuadranteScreen .cq-mensaje.cq-aviso{background:linear-gradient(rgba(240,165,0,.14),rgba(240,165,0,.14)),var(--bg-surface,#161b25);border-color:#f0a500}
 #cuadranteScreen .cq-mensaje.cq-ok{background:var(--green-dim);border-color:var(--green)}
 #cuadranteScreen .cq-mensaje.cq-error{background:var(--red-dim);border-color:var(--red)}
 #cuadranteScreen .cq-scroll{overflow-x:visible;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg-card);margin-bottom:10px}
@@ -7001,6 +7195,11 @@ const CQ_CSS = `
 #cuadranteScreen .cq-fest{color:var(--red)}
 #cuadranteScreen .cq-c.cq-M{background:rgba(59,130,246,.18)}
 #cuadranteScreen .cq-c.cq-T{background:rgba(245,158,11,.30)}
+#cuadranteScreen .cq-c.cq-MT{background:linear-gradient(90deg,rgba(59,130,246,.18) 50%,rgba(245,158,11,.30) 50%)}
+#cuadranteScreen .cq-mensaje:not(:empty){position:sticky;top:calc(env(safe-area-inset-top,0px) + 62px);z-index:30;box-shadow:0 4px 12px rgba(0,0,0,.4)}
+#cuadranteScreen .cq-mensaje.cq-ok{background:linear-gradient(var(--green-dim),var(--green-dim)),var(--bg-surface,#161b25)}
+#cuadranteScreen .cq-mensaje.cq-error{background:linear-gradient(var(--red-dim),var(--red-dim)),var(--bg-surface,#161b25)}
+#cqConfig > .cq-barra:last-child{position:sticky;bottom:0;z-index:6;margin-top:14px;padding:10px 12px;background:var(--bg-surface,#161b25);border-top:1px solid rgba(255,255,255,.14);border-radius:10px 10px 0 0}
 #cuadranteScreen .cq-c.cq-L{color:var(--text-muted)}
 #cuadranteScreen .cq-c.cq-FS,#cuadranteScreen .cq-c.cq-FD{background:rgba(168,85,247,.30)}
 #cuadranteScreen .cq-c.cq-FT{background:rgba(239,68,68,.38);font-weight:700}
@@ -7041,9 +7240,10 @@ function _cqMontar() {
         <h4 class="cq-sub">Festivos nacionales y autonómicos del año</h4>
         <div class="cq-barra"><button type="button" class="button" data-act="fest-proponer">Proponer festivos</button><button type="button" class="button" data-act="fest-add">+ Añadir festivo</button></div>
         <div id="cqFestivos"></div>
+        <h4 class="cq-sub">¿A quién se aplica cada festivo? <span id="cqExclAviso"></span></h4><p class="cq-nota">Por defecto todos los festivos se aplican a todos. Si hay personal de otra comunidad, <b>desmarca</b> los festivos que esa persona NO tiene. Pulsa un nombre para marcar o desmarcar toda su columna, o un festivo para marcar o desmarcar toda su fila. Sus festivos propios añádelos como locales.</p><div id="cqExcluidos"></div>
         <h4 class="cq-sub">Festivos locales de cada operario</h4>
         <div id="cqLocales"></div>
-        <h4 class="cq-sub">Festivos nacionales que NO aplican a cada operario</h4><p class="cq-nota">Para trabajadores de otra comunidad. Sus festivos propios añádelos arriba como locales.</p><div id="cqExcluidos"></div>
+        
         <h4 class="cq-sub">Horas del año</h4>
         <div class="cq-barra" id="cqHoras"></div>
         <div class="cq-barra"><button type="button" class="button" data-act="generar">⚙️ Generar año</button></div>
@@ -7804,7 +8004,7 @@ function _cqMontar() {
 
 /* ===== EXPORTACIÓN MENSUAL DEL CUADRANTE (añadir al final de app.js) ===== */
 (function () {
-  const COL = { M: 'DCE8FD', T: 'FCE2B6', FS: 'E5CCFD', FD: 'E5CCFD', FT: 'F9B8B8', FL: 'C8F0D7' };
+  const COL = { M: 'DCE8FD', MT: 'EAE3D2', T: 'FCE2B6', FS: 'E5CCFD', FD: 'E5CCFD', FT: 'F9B8B8', FL: 'C8F0D7' };
   const DS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
   const fmt = iso => iso.split('-').reverse().join('/');
   const corto = iso => iso.split('-').reverse().slice(0, 2).join('/');
@@ -7835,7 +8035,7 @@ function _cqMontar() {
       cabecera(h1, ['Fecha', 'Día', 'Mañana', 'Tarde', 'Fin de semana / festivos', 'Festivo']);
       dias.forEach(f => {
         const wd = wdDe(f), man = ops.filter(o => cod(o, f) === 'M').map(o => o.nombre), tar = ops.filter(o => cod(o, f) === 'T').map(o => o.nombre);
-        const otros = ops.map(o => [o, cod(o, f)]).filter(([, c]) => c && !['M', 'T', 'L'].includes(c)).map(([o, c]) => `${o.nombre} (${CQ_CODIGOS[c] || c})`);
+        const otros = ops.map(o => [o, cod(o, f)]).filter(([, c]) => c && !['M', 'T', 'MT', 'L'].includes(c)).map(([o, c]) => `${o.nombre} (${CQ_CODIGOS[c] || c})`);
         const r = h1.addRow([fmt(f), DS[wd], man.join(', ') || '–', tar.join(', ') || '–', otros.join(', '), festNombre[f] || '']);
         r.eachCell(c => { c.border = bordes; c.alignment = { vertical: 'middle', wrapText: true }; if (wd >= 5) c.fill = rgb('EFEFF2'); });
         if (festNombre[f]) r.eachCell(c => { c.fill = rgb('FDE2E2'); });
