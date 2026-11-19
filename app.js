@@ -552,19 +552,6 @@ function guardarEquiposDb() {
   localStorage.setItem(LS_KEY_EQUIPOS, JSON.stringify(window.equiposDb));
 }
 
-// Helper: carga una referencia de Firebase una sola vez, con manejo de error
-function _cargarDesdeFirebase(refPath, callback, label) {
-  return new Promise((resolve) => {
-    realDb.ref(refPath).once('value', (snapshot) => {
-      callback(snapshot.val());
-      resolve();
-    }).catch((error) => {
-      console.warn(`Unable to load ${label} from Firebase:`, error);
-      resolve();
-    });
-  });
-}
-
 // Aplica el stock recibido de Firebase en memoria y localStorage
 function _aplicarStockFirebase(firebaseStock) {
   if (!Array.isArray(firebaseStock)) return;
@@ -2189,6 +2176,25 @@ function _renderEquiposNav(listaDiv) {
   }
 }
 
+// Últimas actuaciones de la ficha con filtro (Todo / Mantenimiento / Averías y otros), sin volver a dibujar la ficha.
+// El filtro solo aparece si el equipo tiene actuaciones de los dos grupos.
+function _histFichaHtml(historial, htmlTodo) {
+  const fila = h => `<p class="txt-secondary-sm" style="margin:2px 0 2px 14px">• ${_h(h.fecha || '')} — ${_h(String(h.descripcion || '').slice(0, 120))}</p>`;
+  const esMant = h => _tipoHistLabel(h.tipo) === 'Mantenimiento';
+  const mant = historial.filter(esMant).slice(0, 3), otros = historial.filter(h => !esMant(h)).slice(0, 3);
+  if (!mant.length || !otros.length) return htmlTodo;
+  const boton = (f, txt, activo) => `<button type="button" class="hist-f" style="font-size:0.75rem;padding:2px 9px;margin:0 4px 4px 0;border:1px solid var(--text-secondary,#888);border-radius:10px;background:transparent;color:inherit;cursor:pointer;font-weight:${activo ? 700 : 400}" onclick="_histFicha(this,'${f}')">${txt}</button>`;
+  return `<div style="margin:4px 0 2px 14px">${boton('todo', 'Todo', true)}${boton('mant', 'Mantenimiento')}${boton('otros', 'Averías y otros')}</div>` +
+    `<div data-hist="todo">${htmlTodo}</div>` +
+    `<div data-hist="mant" style="display:none">${mant.map(fila).join('')}</div>` +
+    `<div data-hist="otros" style="display:none">${otros.map(fila).join('')}</div>`;
+}
+window._histFicha = function (btn, f) {
+  const caja = btn.closest('.eq-auditoria'); if (!caja) return;
+  caja.querySelectorAll('[data-hist]').forEach(e => { e.style.display = e.dataset.hist === f ? '' : 'none'; });
+  caja.querySelectorAll('.hist-f').forEach(b => { b.style.fontWeight = b === btn ? '700' : '400'; });
+};
+
 function _auditoriaEquipo(nombreEquipo) {
   const nombre = (nombreEquipo || '').trim().toLowerCase();
   const ahora  = new Date();
@@ -2207,7 +2213,7 @@ function _auditoriaEquipo(nombreEquipo) {
     mants.findIndex(n => n.accion === m.accion && n.periodicidad === m.periodicidad) !== i
   ).length;
 
-  const historial  = _historialDeEquipo(nombreEquipo);
+  const historial  = _historialExportable(nombreEquipo).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
   const ultimaInt  = historial.length ? (historial[0].fecha || '—') : '—';
   const ultimas    = historial.slice(0, 3).map(h =>
     `<p class="txt-secondary-sm" style="margin:2px 0 2px 14px">• ${_h(h.fecha || '')} — ${_h(String(h.descripcion || '').slice(0, 120))}</p>`
@@ -2232,7 +2238,7 @@ function _auditoriaEquipo(nombreEquipo) {
       <p style="font-size:0.83rem;margin:3px 0;color:${correctivos >= 5 ? 'var(--red)' : correctivos >= 2 ? '#f0a500' : 'inherit'}">🔧 Correctivos 12 meses: <strong>${correctivos}</strong></p>
       <p style="font-size:0.83rem;margin:3px 0;color:${duplicados > 0 ? '#f0a500' : 'inherit'}">⚠️ Posibles duplicados: <strong>${duplicados}</strong></p>
       <p class="txt-secondary-sm">🕐 Última intervención: <strong>${ultimaInt}</strong></p>
-      ${ultimas}
+      ${_histFichaHtml(historial, ultimas)}
     </div>`;
 }
 
@@ -2262,8 +2268,10 @@ function _renderMantsFicha(nombreEquipo) {
   if (!mants.length) return '<p style="color:var(--text-muted);font-size:0.82rem">No hay mantenimientos programados para este equipo</p>';
   return mants.slice().sort((a, b) => (a.periodicidad || 0) - (b.periodicidad || 0)).map(m => {
     const vencido = typeof esMantenimientoVencido === 'function' && esMantenimientoVencido(m);
+    const _d = new Date(), _hoy = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}-${String(_d.getDate()).padStart(2, '0')}`;
+    const venceHoy = vencido && calcularProximaFecha(m).toISOString().slice(0, 10) === _hoy;
     const badge   = vencido
-      ? '<span style="color:var(--red);font-size:0.75rem;margin-left:6px">⚠ VENCIDO</span>'
+      ? (venceHoy ? '<span style="color:var(--amber);font-size:0.75rem;margin-left:6px">⏰ Vence hoy</span>' : '<span style="color:var(--red);font-size:0.75rem;margin-left:6px">⚠ VENCIDO</span>')
       : '<span style="color:var(--green);font-size:0.75rem;margin-left:6px">✓ Al día</span>';
     return `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:0.83rem">
       <strong>${_h(m.accion)}</strong>${badge}<br>
@@ -3403,7 +3411,7 @@ async function completeMaintenance(id, buttonElement) {
     }
 
     // Historial del equipo
-    await _guardarHistorialEquipo(m.equipo, {
+    if (HISTORIAL_PERIODICOS_EN_EQUIPO) await _guardarHistorialEquipo(m.equipo, {
       fecha:       fechaEjecucion,
       descripcion: m.accion || '',
       tipo:        'mantenimiento'
@@ -4003,32 +4011,85 @@ function restaurarBackupEquiposLocal() {
   }
 }
 
+// Las ejecuciones de los mantenimientos periódicos se leen de m.historial (completo y sin tope) y ya no se copian a
+// historialEquipos, para que no desplacen a los correctivos del límite de 50. Si hiciera falta volver al comportamiento
+// anterior (copiarlas también), basta con poner esto en true.
+const HISTORIAL_PERIODICOS_EN_EQUIPO = false;
+
+// Tipos de historial unificados para mostrar y exportar (en los datos se conservan los valores originales)
+function _tipoHistLabel(t) {
+  const k = _histNorm(t).replace(/[^a-z]/g, '');
+  const m = { mantenimiento: 'Mantenimiento', preventivo: 'Mantenimiento', tarea: 'Mantenimiento', correctivo: 'Correctivo', averia: 'Correctivo', averiaantigua: 'Correctivo', modificativo: 'Modificativo', parte: 'Parte de trabajo', partetrabajo: 'Parte de trabajo', tareaoperativa: 'Tarea operativa' };
+  if (Object.prototype.hasOwnProperty.call(m, k)) return m[k];
+  return (typeof ORIGEN_LABELS_HIST !== 'undefined' && ORIGEN_LABELS_HIST[t]) || String(t == null ? '' : t);
+}
+
+// Nombre actual del equipo y los que tuvo antes (nombresAnteriores), para hallar su historial aunque se haya renombrado.
+// Un nombre anterior que hoy pertenece a OTRO equipo se descarta, para no mezclar historiales.
+function _nombresDeEquipo(nombre) {
+  const out = [String(nombre || '').trim()].filter(Boolean), k = _histNorm(nombre);
+  const lista = (window.equiposDb && window.equiposDb.equiposGuardados) || [];
+  const eq = lista.find(e => e && _histNorm(e.equipo) === k);
+  if (eq && Array.isArray(eq.nombresAnteriores)) eq.nombresAnteriores.forEach(n => {
+    const kn = _histNorm(n);
+    if (!kn || out.some(o => _histNorm(o) === kn) || lista.some(e => e && e !== eq && _histNorm(e.equipo) === kn)) return;
+    out.push(n);
+  });
+  return out;
+}
+
+// Historial completo de un equipo para exportar: ejecuciones de sus mantenimientos periódicos (m.historial, sin tope)
+// más historialEquipos (≤50) sin duplicados. Devuelve [{ fecha, descripcion, tipo, operario, detalle }]
+function _historialExportable(nombre) {
+  const nombres = _nombresDeEquipo(nombre), ks = nombres.map(n => _histNorm(n)), out = [], visto = {};
+  const clave = (f, d) => (f || '') + '|' + _histNorm(d);
+  (db.mantenimientosPeriodicos || []).forEach(m => {
+    if (!m || ks.indexOf(_histNorm(m.equipo)) < 0) return;
+    (Array.isArray(m.historial) ? m.historial : []).forEach(h => {
+      if (!h) return;
+      const fecha = h.fechaEjecucion || h.fecha || '', desc = m.accion || h.obs || '', det = [];
+      if (h.fechaProgramada) det.push('Programada: ' + h.fechaProgramada + (typeof h.diasDesviacion === 'number' && h.diasDesviacion ? ' (' + (h.diasDesviacion > 0 ? '+' : '') + h.diasDesviacion + ' d)' : ''));
+      if (h.observaciones || h.obs) det.push(h.observaciones || h.obs);
+      const quien = Array.isArray(h.participantes) && h.participantes.length ? h.participantes.join(', ') : (h.operario || h.nombre || h.cerradoPorNombre || '');
+      out.push({ fecha, descripcion: desc, tipo: 'mantenimiento', operario: quien, detalle: det.join(' · ') });
+      visto[clave(fecha, desc)] = true;
+    });
+  });
+  const refs = new Set();
+  nombres.forEach(n => _historialDeEquipo(n).forEach(e => {
+    if (!e || refs.has(e) || visto[clave(e.fecha, e.descripcion)]) return;
+    refs.add(e);
+    out.push({ fecha: e.fecha || '', descripcion: e.descripcion || '', tipo: e.tipo || '', operario: e.operario || '', detalle: '' });
+  }));
+  return out;
+}
+
 async function exportarHistorialEquipo(nombreEquipo) {
-  var lista = _historialDeEquipo(nombreEquipo).map(function(e) {
-    return { fecha: e.fecha || '', descripcion: e.descripcion || '', tipo: e.tipo || '', operario: e.operario || '' };
+  var lista = _historialExportable(nombreEquipo).map(function(e) {
+    return { fecha: e.fecha || '', descripcion: e.descripcion || '', tipo: _tipoHistLabel(e.tipo), operario: e.operario || '', detalle: e.detalle || '' };
   });
   // Actuaciones anteriores que solo quedaron en historialTrabajos (una lectura de ~20 KB, solo al pulsar)
   try {
     if (INST() !== 'default') {
       var snap = await realDb.ref('instalaciones/' + INST() + '/historialTrabajos').once('value');
-      var k = _histNorm(nombreEquipo), visto = {};
+      var ks = _nombresDeEquipo(nombreEquipo).map(function(n) { return _histNorm(n); }), visto = {};
       lista.forEach(function(e) { visto[e.fecha + '|' + _histNorm(e.descripcion)] = true; });
       snap.forEach(function(ch) {
         var v = ch.val() || {};
-        if (_histNorm(v.equipo) !== k) return;
+        if (ks.indexOf(_histNorm(v.equipo)) < 0) return;
         var clave = (v.fecha || '') + '|' + _histNorm(v.descripcion);
         if (visto[clave]) return;
         visto[clave] = true;
-        lista.push({ fecha: v.fecha || '', descripcion: v.descripcion || '', tipo: (typeof ORIGEN_LABELS_HIST !== 'undefined' && ORIGEN_LABELS_HIST[v.origen]) || v.origen || '', operario: v.nombre || '' });
+        lista.push({ fecha: v.fecha || '', descripcion: v.descripcion || '', tipo: _tipoHistLabel(v.origen), operario: v.nombre || '' });
       });
     }
   } catch (e) { console.warn('exportarHistorialEquipo: historialTrabajos no disponible', e); }
   lista.sort(function(a, b) { return String(b.fecha).localeCompare(String(a.fecha)); });
   if (!lista.length) { alert('No hay historial registrado para este equipo'); return; }
-  var lineas = ['fecha,equipo,descripcion,tipo,operario'];
+  var lineas = ['fecha,equipo,descripcion,tipo,operario,detalle'];
   for (var i = 0; i < lista.length; i++) {
     var e2 = lista[i];
-    var cols = [e2.fecha, nombreEquipo, e2.descripcion, e2.tipo, e2.operario];
+    var cols = [e2.fecha, nombreEquipo, e2.descripcion, e2.tipo, e2.operario, e2.detalle || ''];
     lineas.push(cols.map(function(v) { return '"' + String(v).replace(/"/g, '""') + '"'; }).join(','));
   }
   var blob = new Blob(['\uFEFF' + lineas.join('\n')], { type: 'text/csv;charset=utf-8;' });
@@ -4066,6 +4127,49 @@ function _historialDeEquipo(nombre) {
   return out.filter(Boolean).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
 }
 
+// Renombrado de equipo: cuántos registros se actualizarán (para avisar antes de confirmar)
+function _resumenRenombrado(viejo) {
+  const kv = _histNorm(viejo), c = a => (Array.isArray(a) ? a : []).filter(x => x && _histNorm(x.equipo) === kv).length;
+  return { mant: c(db.mantenimientosPeriodicos), partes: c(db.workOrders) + c(db.workOrdersAverias) + c(db.workOrdersTareas), hist: _historialDeEquipo(viejo).length };
+}
+
+// Renombrado en cascada: mantiene unidos plan, partes, averías, tareas e historial bajo el nombre nuevo.
+// Cada nodo se actualiza por separado; si uno falla se deshace en memoria y se devuelve en errores.
+async function _renombrarEquipoEnCascada(viejo, nuevo) {
+  const out = { errores: [] };
+  const kv = _histNorm(viejo);
+  if (!kv || !String(nuevo || '').trim() || viejo === nuevo) return out;
+  const base = `instalaciones/${INST()}`;
+  const nodos = [['mantenimientosPeriodicos', 'mantenimientos periódicos'], ['workOrders', 'partes'], ['workOrdersAverias', 'averías'], ['workOrdersTareas', 'tareas']];
+  for (const [nodo, etiqueta] of nodos) {
+    const arr = db[nodo]; if (!Array.isArray(arr)) continue;
+    const tocados = arr.filter(x => x && _histNorm(x.equipo) === kv);
+    if (!tocados.length) continue;
+    const previos = tocados.map(x => x.equipo);
+    tocados.forEach(x => { x.equipo = nuevo; });
+    try { await realDb.ref(`${base}/${nodo}`).set(arr); }
+    catch (e) { tocados.forEach((x, i) => { x.equipo = previos[i]; }); out.errores.push(etiqueta); console.warn('renombrar equipo: ' + nodo, e); }
+  }
+  if (kv !== _histNorm(nuevo)) {                                    // el historial va por nombre: se mueve a la clave nueva
+    try {
+      const mapa = db.historialEquipos || {}, k2 = _histNorm(_histClave(viejo)), kn = _histNorm(nuevo), kn2 = _histNorm(_histClave(nuevo));
+      const origen = Object.keys(mapa).filter(c => { const k = _histNorm(c); return k === kv || k === k2; });
+      const previo = Object.keys(mapa).find(c => { const k = _histNorm(c); return k === kn || k === kn2; });
+      if (origen.length) {
+        const destino = previo || _histClave(nuevo), lista = [];
+        origen.concat(previo && !origen.includes(previo) ? [previo] : []).forEach(c => { const v = mapa[c]; (Array.isArray(v) ? v : Object.values(v || {})).forEach(e => { if (e) lista.push(e); }); });
+        lista.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+        const upd = {}; upd[destino] = lista; origen.forEach(c => { if (c !== destino) upd[c] = null; });
+        await realDb.ref(`${base}/historialEquipos`).update(upd);
+        origen.forEach(c => { if (c !== destino) delete mapa[c]; });
+        mapa[destino] = lista; db.historialEquipos = mapa;
+      }
+    } catch (e) { out.errores.push('historial'); console.warn('renombrar equipo: historial', e); }
+  }
+  try { localStorage.setItem(LS_KEY_APP, JSON.stringify(db)); } catch (e) { /* sin espacio local: no es crítico */ }
+  return out;
+}
+
 // Guarda una intervención en el historial del equipo: escribe solo el nodo de ese equipo (<1 KB)
 async function _guardarHistorialEquipo(nombreEquipo, entrada) {
   nombreEquipo = String(nombreEquipo || '').trim();
@@ -4099,7 +4203,7 @@ function _mostrarHistorialEquipo(nombreEquipo, inputEl) {
   const prev = inputEl.parentElement.querySelector('.eq-historial-panel');
   if (prev) prev.remove();
   if (!nombreEquipo) return;
-  const entries = _historialDeEquipo(nombreEquipo).slice(0, 4);
+  const entries = _historialExportable(nombreEquipo).sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || ''))).slice(0, 4);
   if (!entries.length) return;
   const panel = document.createElement('div');
   panel.className = 'eq-historial-panel';
@@ -4286,11 +4390,7 @@ const equipoPicker = (() => {
     });
   }
 
-  function _showZonas() {
-    // kept for back navigation compatibility
-    _showFamilias();
-  }
-
+  
   function _showZonasDeFamilia(familia) {
     _paso = 'zona'; _familia = familia;
     _titulo().textContent = 'Seleccionar zona';
@@ -6003,7 +6103,7 @@ async function confirmarTareaRealizada(id, tipo) {
         uid:         autor.uid,
         nombre:      autor.nombre
       });
-      if (db.mantenimientosPeriodicos[idx].equipo) await _guardarHistorialEquipo(db.mantenimientosPeriodicos[idx].equipo, {
+      if (HISTORIAL_PERIODICOS_EN_EQUIPO && db.mantenimientosPeriodicos[idx].equipo) await _guardarHistorialEquipo(db.mantenimientosPeriodicos[idx].equipo, {
         fecha, descripcion: db.mantenimientosPeriodicos[idx].accion || obs,
         tipo: db.mantenimientosPeriodicos[idx].tipo === 'preventivo' ? 'preventivo' : 'tarea'
       });
@@ -6798,7 +6898,7 @@ function _cqHojaFormulas(wb, doc, wsCuad) {
     celda('E' + r, { formula: `COUNT(B${r}:D${r})`, result: loc.length }); celda('F' + r, { formula: `L${sr}`, result: fl });
     celda('G' + r, { formula: `IF(F${r}=E${r},"OK","REVISAR")`, result: fl === loc.length ? 'OK' : 'REVISAR' }); r++;
   });
-  r += 1; titulo('A' + r, 'FESTIVOS NACIONALES QUE NO APLICAN A CADA OPERARIO (informativo)'); r++;
+  r += 1; titulo('A' + r, 'FESTIVOS QUE NO APLICAN A CADA OPERARIO (informativo)'); r++;
   doc.operarios.forEach(o => { celda('A' + r, o.nombre, { izq: true, bold: true }); ws.mergeCells(`B${r}:H${r}`); celda('B' + r, ((doc.excluidos || {})[o.id] || []).map(f => f.split('-').reverse().join('/')).join(', ') || '–', { izq: true }); r++; });
 
   r += 1; titulo('A' + r, 'REGLAS APLICADAS AL GENERAR EL CUADRANTE'); r++;
@@ -6883,37 +6983,12 @@ async function cuadranteExportarExcel() {
     (doc.festivos || []).forEach(f => { const r = wf.addRow([fmt(f.fecha), DS[wdDe(f.fecha)], f.nombre || '']); r.eachCell(c => { c.border = bordes; }); });
     sub('Festivos locales de cada operario'); cabecera(wf, ['Operario', 'Fechas', '']);
     doc.operarios.forEach(o => fila2(o.nombre, ((doc.locales || {})[o.id] || []).map(fmt).join(', ') || '–'));
-    sub('Festivos nacionales que NO aplican a cada operario'); cabecera(wf, ['Operario', 'Fechas', '']);
+    sub('Festivos que no aplican a cada operario'); cabecera(wf, ['Operario', 'Fechas', '']);
     doc.operarios.forEach(o => fila2(o.nombre, ((doc.excluidos || {})[o.id] || []).map(f => fmt(f) + (festNombre[f] ? ' (' + festNombre[f] + ')' : '')).join(', ') || '–'));
     _cqHojaFormulas(wb, doc, ws);   // 4.ª hoja: fórmulas y datos a rellenar
 
     const buf = await wb.xlsx.writeBuffer();
     _descargarLocal(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `Cuadrante_${y}.xlsx`);
-    _cqMsg(`Cuadrante ${y} exportado a Excel.`, true);
-  } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
-}
-async function _cqExportarExcelViejo() {
-  try {
-    const doc = await _cqCargarAnio(_cq.anio); if (!doc) return _cqMsg('No hay ningún año seleccionado.', false);
-    if (typeof XLSX === 'undefined') return _cqMsg('La librería de Excel no está cargada.', false);
-    const y = doc.year, hojaCuadrante = [];
-    for (let mes = 0; mes < 12; mes++) {
-      const nd = new Date(Date.UTC(y, mes + 1, 0)).getUTCDate();
-      hojaCuadrante.push([`${CQ_MESES[mes].toUpperCase()} ${y}`]);
-      hojaCuadrante.push(['Empleado', ...Array.from({ length: nd }, (_, i) => i + 1)]);
-      hojaCuadrante.push(['', ...Array.from({ length: nd }, (_, i) => CQ_DIASEM[(cqDate(cqIso(new Date(Date.UTC(y, mes, i + 1)))).getUTCDay() + 6) % 7])]);
-      doc.operarios.forEach(o => hojaCuadrante.push([o.nombre, ...Array.from({ length: nd }, (_, i) => _cqCodigo(doc, o.id, cqIso(new Date(Date.UTC(y, mes, i + 1)))))]));
-      hojaCuadrante.push([]);
-    }
-    const p = doc.horas, hojaHoras = [['Operario', 'Mañanas', 'Tardes', 'Sábados', 'Domingos', 'Festivos trabajados', 'Festivos locales', 'Horas', 'Convenio', 'Balance', 'Puentes']];
-    doc.operarios.forEach(o => { const r = cuadranteHoras(Object.assign({}, doc.dias[o.id] || []), p); hojaHoras.push([o.nombre, r.cnt.M || 0, r.cnt.T || 0, r.cnt.FS || 0, r.cnt.FD || 0, r.cnt.FT || 0, r.cnt.FL || 0, Math.round(r.h.total * 100) / 100, p.convenio, Math.round((r.h.total - p.convenio) * 100) / 100, (doc.puentes || []).filter(x => x.id === o.id).map(x => x.fechas.join('+')).join('; ')]); });
-    hojaHoras.push([], ['Parámetros'], ...Object.keys(CQ_HORAS_ETQ).map(k => [CQ_HORAS_ETQ[k], p[k]]));
-    const hojaFest = [['Fecha', 'Festivo'], ...(doc.festivos || []).map(f => [f.fecha, f.nombre]), [], ['Festivos locales'], ...Object.keys(doc.locales || {}).map(id => [((doc.operarios.find(o => o.id === id)) || {}).nombre || id, (doc.locales[id] || []).join(', ')])];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hojaCuadrante), 'Cuadrante');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hojaHoras), 'Horas');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hojaFest), 'Festivos');
-    XLSX.writeFile(wb, `Cuadrante_${y}.xlsx`);
     _cqMsg(`Cuadrante ${y} exportado a Excel.`, true);
   } catch (e) { _cqMsg(_cqErrorLegible(e), false); }
 }
@@ -8195,6 +8270,11 @@ function _cqMontar() {
     const familia = val(`familia-${index}`), zona = val(`zona-${index}`), equipo = val(`equipo-${index}`), modelo = val(`modelo-${index}`);
     if (!familia || !zona || !equipo || !modelo) { alert('Por favor complete todos los campos correctamente'); return; }
     const lista = [...eqs()], actual = lista[index]; if (!actual) { alert('No se encontró el equipo.'); return; }
+    if (_histNorm(equipo) !== _histNorm(actual.equipo)) {      // cambio de nombre: sin duplicados y con aviso de lo que se actualiza
+      if (lista.some(e => e && e !== actual && _histNorm(_histClave(e.equipo)) === _histNorm(_histClave(equipo)))) { alert('Ya existe otro equipo llamado «' + equipo.trim() + '». Elige un nombre distinto: si no, se mezclarían sus historiales y sus mantenimientos.'); return; }
+      const _r = _resumenRenombrado(actual.equipo);
+      if (!confirm('Vas a cambiar «' + actual.equipo + '» por «' + equipo.trim() + '».\n\nSe actualizarán con el nombre nuevo:\n• ' + _r.mant + ' mantenimiento(s) periódico(s)\n• ' + _r.partes + ' parte(s), avería(s) y tarea(s)\n• ' + _r.hist + ' actuación(es) del historial\n\n¿Continuar?')) return;
+    }
     const sel = document.getElementById(`comparte-${index}`), destino = sel ? sel.value : (actual.recambiosDe && maestroDe(actual, lista) ? actual.recambiosDe : '');
     if (destino) {
       const m = lista.find(e => e && e !== actual && e.equipo === destino);
@@ -8221,10 +8301,13 @@ function _cqMontar() {
     try {
       if (equipo !== actual.equipo) dependientes(actual, lista).forEach(e => { e.recambiosDe = equipo; });  // si se renombra el principal, los demás lo siguen
       const nuevo = { familia, zona, equipo, modelo, recambios }; if (destino) nuevo.recambiosDe = destino;
+      { const _ant = (Array.isArray(actual.nombresAnteriores) ? actual.nombresAnteriores : []).slice(); if (_histNorm(equipo) !== _histNorm(actual.equipo)) _ant.push(actual.equipo); const _fin = _ant.filter(n => _histNorm(n) !== _histNorm(equipo)).slice(-10); if (_fin.length) nuevo.nombresAnteriores = _fin; }
       lista[index] = nuevo;
       window.equiposDb.equiposGuardados = lista; enlazar(lista);
       _equiposNav = { paso: 'equipo', familia, zona };
       await realDb.ref(`instalaciones/${INST()}/stock`).set(lista);
+      const _rn = await _renombrarEquipoEnCascada(actual.equipo, equipo);
+      if (_rn.errores.length) alert('El equipo se ha renombrado, pero no se pudo actualizar: ' + _rn.errores.join(', ') + '.\nPueden quedar elementos con el nombre anterior («' + actual.equipo + '»). Los mantenimientos aparecerán en el diagnóstico de equipos huérfanos.');
       guardarEquiposDb(); actualizarListaEquipos(); updateStockIcon();
       alert('Cambios guardados con éxito');
     } catch (error) { console.error('Error al guardar cambios:', error); alert('Error al guardar los cambios: ' + error.message); }
@@ -8856,7 +8939,8 @@ function _cqMontar() {
     const c = compraDe(a);
     if (c && (c.e === 'solicitada' || c.e === 'aceptada')) { alert('«' + a.nombre + '» ya tiene una petición abierta en Compra (pendiente de aprobar o en la lista).'); pintar(); return; }
     if (c && c.e === 'comprada' && !confirm('«' + a.nombre + '» ya se compró el ' + fechaCorta(c.compradoEn) + '. ¿Pedir otra vez?')) return;
-    const r = prompt((intro || '') + 'Cantidad a pedir de «' + a.nombre + '» (' + (a.unidad || 'ud') + '):', String(sugerido(a)));
+    if (intro && !(c && c.e === 'comprada') && !confirm(intro + '¿Pedir ahora?')) return;
+    const r = prompt('Cantidad a pedir de «' + a.nombre + '» (' + (a.unidad || 'ud') + '):', String(sugerido(a)));
     if (r === null) return;
     const q = Number(String(r).replace(',', '.'));
     if (!(q > 0)) { alert('Escribe una cantidad mayor que 0'); return; }
@@ -9212,7 +9296,7 @@ function _cqMontar() {
 
   function pintar() {
     const cont = el('almacenEquiposLista'), tit = el('almacenEquiposTitulo'); if (!cont || !tit) return;
-    const l = visibles(), nb = l.filter(x => bajo(x.r)).length;
+    const l = visibles(), nb = l.filter(x => Number(x.r.minimo) > 0 && bajo(x.r)).length;
     tit.textContent = 'Recambios de equipos (' + l.length + (nb ? ' · ' + nb + ' por reponer' : '') + ')';
     window._almEqN = l.length; const _ce = document.querySelector('#almacenChips [data-cat="equipos"]'); if (_ce) _ce.textContent = 'Recambios de equipos (' + l.length + ')';
     cont.innerHTML = l.length
@@ -9340,7 +9424,7 @@ function _cqMontar() {
         (eq.recambios || []).forEach(r => {
           if (!r || !r.nombre) return;
           const s = Number(r.cantidad) || 0, m = Number(r.minimo) || 0;
-          if (m > 0 ? s <= m : s <= 0) n++;
+          if (m > 0 && s <= m) n++;
         });
       });
       b.textContent = '📦 Almacén' + (n ? ' (' + n + ')' : '');
