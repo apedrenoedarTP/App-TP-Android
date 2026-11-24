@@ -8631,6 +8631,10 @@ function _cqMontar() {
   let grupoActual = null;
   let subActual = null;
   const filtro = { texto: '', cat: 'ubic', fam: '', orden: 'nombre', limite: PAGINA };
+  // Vista de la lista: compacta (por defecto) o cómoda; se recuerda en este dispositivo
+  let compacta = (() => { try { return localStorage.getItem('almDensidad') !== 'comoda'; } catch (e) { return true; } })();
+  // Dentro de una leja o contenedor todos los artículos comparten ubicación: no hace falta repetirla en cada fila
+  const ubicImplicita = () => filtro.cat === 'ubic' && !!grupoActual && norm(filtro.texto).trim() === '';
 
   // Código canónico: MAYÚSCULAS, sin espacios alrededor del guion, y «/», «:» o «·» convertidos en «-».
   //   «L3»     → artículo grande, identificado solo por la leja
@@ -8710,11 +8714,11 @@ function _cqMontar() {
   }
 
   function htmlFila(a) {
-    const sub = (CATS[a.categoria] || '') + (Number(a.minimo) > 0 ? ' · mín. ' + a.minimo : '');
+    const sub = (CATS[a.categoria] || '') + (Number(a.minimo) > 0 ? ' · mín. ' + a.minimo : '') + (compacta && !ubicImplicita() ? ' · ' + (a.ubicacion ? '📍 ' + a.ubicacion : 'sin ubicación') : '');
     return '<div class="alm-item' + (bajoMinimo(a) ? ' alm-bajo' : '') + '" data-id="' + _h(a.id) + '">' +
       '<div class="alm-fila">' +
         '<div class="alm-info" data-accion="abrir"><strong>' + _h(a.nombre) + '</strong><small>' + _h(sub) + '</small>' + htmlCompra(a) + '</div>' +
-        (a.ubicacion ? '<span class="alm-ubic">📍 ' + _h(a.ubicacion) + '</span>' : '<span class="alm-ubic alm-sin">Sin ubicación</span>') +
+        (compacta ? '' : (a.ubicacion ? '<span class="alm-ubic">📍 ' + _h(a.ubicacion) + '</span>' : '<span class="alm-ubic alm-sin">Sin ubicación</span>')) +
         '<div class="alm-cant">' +
           '<button type="button" class="alm-btn" data-accion="menos" aria-label="Restar uno">−</button>' +
           '<span class="alm-num" data-accion="contar" title="Toca para fijar la cantidad contada">' + _h(a.cantidad) + '<small>' + _h(a.unidad || 'ud') + '</small></span>' +
@@ -8728,9 +8732,11 @@ function _cqMontar() {
     const nGrupos = new Set(b.map(grupoDe)).size;
     const chips = [['ubic', 'Ubicaciones', nGrupos], ['todo', 'Todo', n], ['bajo', 'Por reponer', bajo], ['equipos', 'Recambios de equipos', window._almEqN == null ? '' : window._almEqN]];
     const cont = el('almacenChips');
-    if (cont) cont.innerHTML = chips.map(c => '<button type="button" class="alm-chip' + (filtro.cat === c[0] ? ' alm-chip-on' : '') + (c[0] === 'bajo' && c[2] ? ' alm-chip-alerta' : '') + '" data-cat="' + c[0] + '">' + c[1] + (c[2] === '' ? '' : ' (' + c[2] + ')') + '</button>').join('');
+    if (cont) cont.innerHTML = chips.map(c => '<button type="button" class="alm-chip' + (filtro.cat === c[0] ? ' alm-chip-on' : '') + ((c[0] === 'bajo' && c[2]) || (c[0] === 'equipos' && typeof window._almEqBajoN === 'function' && window._almEqBajoN() > 0) ? ' alm-chip-alerta' : '') + '" data-cat="' + c[0] + '">' + c[1] + (c[2] === '' ? '' : ' (' + c[2] + ')') + '</button>').join('');
     const est = el('almacenEstado');
     if (est) est.textContent = n + ' artículo(s)' + (bajo ? ' · ' + bajo + ' por reponer' : '') + (cargadoEn ? ' · cargado a las ' + new Date(cargadoEn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '');
+    const bd = el('almacenBtnDensidad');
+    if (bd) { bd.textContent = compacta ? '▤ Vista compacta' : '☰ Vista cómoda'; bd.setAttribute('aria-pressed', compacta ? 'true' : 'false'); bd.title = 'Cambiar entre vista compacta y cómoda'; }
     const dl = el('almacen-ubicaciones');
     if (dl) dl.innerHTML = [...new Set(items.map(a => normUbic(a.ubicacion)).filter(Boolean))].sort().map(u => '<option value="' + _h(u) + '">').join('');
   }
@@ -8797,7 +8803,7 @@ function _cqMontar() {
     }
     if (!l.length && !tarjetas) { cont.innerHTML = cab + '<p class="alm-vacio">' + (filtro.cat === 'bajo' ? 'No hay nada por reponer ✅' : 'Sin resultados con esos filtros.') + '</p>'; return; }
     const ver = l.slice(0, filtro.limite);
-    cont.innerHTML = cab + tarjetas + titulo + ver.map(htmlFila).join('') +
+    cont.innerHTML = cab + tarjetas + titulo + (compacta ? '<div class="alm-bloque">' + ver.map(htmlFila).join('') + '</div>' : ver.map(htmlFila).join('')) +
       (ver.length < l.length ? '<button type="button" class="button alm-mas" data-accion="mas-resultados">Mostrar más (' + (l.length - ver.length) + ' restantes)</button>' : '');
   }
 
@@ -9082,6 +9088,8 @@ function _cqMontar() {
     if (!lista || lista.dataset.listo) return;
     lista.dataset.listo = '1';
     el('almacenBuscador').addEventListener('input', e => { filtro.texto = e.target.value; filtro.limite = PAGINA; pintarLista(); });
+    const _bd = el('almacenBtnDensidad');
+    if (_bd) _bd.addEventListener('click', () => { compacta = !compacta; try { localStorage.setItem('almDensidad', compacta ? 'compacta' : 'comoda'); } catch (e) { /* sin almacenamiento: dura solo esta sesión */ } pintar(); });
     el('almacenFamilia').addEventListener('change', e => { filtro.fam = e.target.value; filtro.limite = PAGINA; pintar(); });
     el('almacenOrden').addEventListener('change', e => { filtro.orden = e.target.value; filtro.limite = PAGINA; pintarLista(); });
     el('almacenChips').addEventListener('click', e => { const b = e.target.closest('.alm-chip'); if (!b) return; filtro.cat = b.dataset.cat; filtro.limite = PAGINA; abierto = null; if (filtro.cat === 'ubic') { grupoActual = null; subActual = null; } pintar(); });
@@ -9262,6 +9270,8 @@ function _cqMontar() {
   // Por reponer: si tiene mínimo, cuando llega a él; si no, cuando se agota
   const bajo = r => Number(r.minimo) > 0 ? Number(r.cantidad) <= Number(r.minimo) : Number(r.cantidad) <= 0;
   const buscador = () => el('almacenBuscador');
+  // Recambios de equipos por reponer (con mínimo definido), sin depender de la búsqueda: lo usa el chip del Almacén
+  window._almEqBajoN = () => filas().filter(x => Number(x.r.minimo) > 0 && bajo(x.r)).length;
 
   // Recambios de los equipos que no comparten (los que comparten se editan desde su equipo principal)
   function filas() {
@@ -9298,7 +9308,7 @@ function _cqMontar() {
     const cont = el('almacenEquiposLista'), tit = el('almacenEquiposTitulo'); if (!cont || !tit) return;
     const l = visibles(), nb = l.filter(x => Number(x.r.minimo) > 0 && bajo(x.r)).length;
     tit.textContent = 'Recambios de equipos (' + l.length + (nb ? ' · ' + nb + ' por reponer' : '') + ')';
-    window._almEqN = l.length; const _ce = document.querySelector('#almacenChips [data-cat="equipos"]'); if (_ce) _ce.textContent = 'Recambios de equipos (' + l.length + ')';
+    window._almEqN = l.length; const _ce = document.querySelector('#almacenChips [data-cat="equipos"]'); if (_ce) { _ce.textContent = 'Recambios de equipos (' + l.length + ')'; _ce.classList.toggle('alm-chip-alerta', window._almEqBajoN() > 0); }
     cont.innerHTML = l.length
       ? l.slice(0, limite).map(htmlFila).join('') + (l.length > limite ? '<button type="button" class="button alm-mas" data-a="mas">Mostrar más (' + (l.length - limite) + ' restantes)</button>' : '')
       : '<p class="alm-vacio">Ningún recambio de equipo' + (buscador() && buscador().value.trim() ? ' coincide con la búsqueda' : ' todavía') + '.</p>';
@@ -9825,7 +9835,7 @@ function _cqMontar() {
 .vr-kpi { padding: 8px 10px; text-align: center; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-md); }
 .vr-kpi b { display: block; font-size: 1.25rem; } .vr-kpi span { font-size: .75rem; color: var(--text-secondary); }
 .vr-aviso { padding: 10px 12px; margin: 0 0 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-surface); font-size: .88rem; color: var(--text-secondary); }
-.vr-tabla { width: 100%; border-collapse: collapse; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.vr-tabla { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); }
 .vr-tabla th, .vr-tabla td { padding: 4px 6px; border-bottom: 1px solid var(--border); text-align: center; font-size: .85rem; }
 .vr-tabla thead th { background: var(--bg-surface); font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; color: var(--text-secondary); }
 .vr-tabla .vr-dia { text-align: left; white-space: nowrap; width: 64px; } .vr-tabla .vr-dia small { color: var(--text-muted); margin-left: 4px; }
@@ -9834,7 +9844,11 @@ function _cqMontar() {
 .vr-tabla input[type=text] { min-width: 150px; text-align: left; }
 .vr-tabla input[type=checkbox] { width: 20px; height: 20px; }
 .vr-tabla tfoot th { background: var(--bg-surface); font-weight: 700; }
-.vr-wrap { overflow-x: auto; }
+.vr-wrap { overflow: auto; max-height: 70vh; max-height: calc(100dvh - 200px); min-height: 200px; }
+.vr-wrap .vr-tabla thead th { position: sticky; top: 0; z-index: 2; }
+.vr-wrap .vr-tabla thead th:first-child { left: 0; z-index: 3; }
+.vr-wrap .vr-tabla tbody th.vr-dia { position: sticky; left: 0; z-index: 1; background: var(--bg-card); }
+.vr-wrap .vr-tabla tr.vr-finde th.vr-dia { background: linear-gradient(rgba(255,255,255,.04), rgba(255,255,255,.04)), var(--bg-card); }
 .vr-chips { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0 10px; }
 .vr-chipdia { flex: 0 0 auto; min-width: 42px; min-height: 42px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text-primary); cursor: pointer; line-height: 1.1; }
 .vr-chipdia small { display: block; font-size: .65rem; color: var(--text-muted); } .vr-chipdia.vr-fin { background: rgba(255,255,255,.05); }

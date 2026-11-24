@@ -1738,6 +1738,21 @@ details.plegable > .plegable-cuerpo { padding: 18px 18px 6px; }
 .alm-volver { min-height: 40px; padding: 8px 14px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-card); color: var(--text-primary); font: inherit; cursor: pointer; }
 .alm-volver:hover { background: var(--bg-hover); }
 .alm-mas { margin: 12px auto 0; }
+/* Vista compacta del Almacén: una línea de contenido por artículo y todas las filas en un solo bloque */
+.alm-bloque { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); overflow: hidden; }
+.alm-bloque .alm-item { margin: 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; }
+.alm-bloque .alm-item:last-child { border-bottom: 0; }
+.alm-bloque .alm-item.alm-bajo { background: rgba(231,76,60,.10); box-shadow: inset 3px 0 0 var(--red); }
+.alm-bloque .alm-fila { flex-wrap: nowrap; gap: 8px; padding: 6px 8px 6px 12px; }
+.alm-bloque .alm-info { flex: 1 1 0; min-width: 0; gap: 0; }
+.alm-bloque .alm-info strong { font-size: .95rem; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.alm-bloque .alm-info > strong + small { font-size: .76rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.alm-bloque .alm-cant { display: grid; grid-template-columns: 40px 44px 40px; gap: 2px; align-items: center; flex: 0 0 130px; width: 130px; margin-left: 0; }
+.alm-bloque .alm-btn { width: 40px; height: 40px; }
+.alm-bloque .alm-num { min-width: 0; font-size: 1.15rem; }
+.alm-bloque .alm-num small { font-size: .62rem; }
+.alm-bloque .alm-compra { margin-top: 2px; font-size: .76rem; }
+.alm-bloque .alm-pedir { min-height: 36px; margin-top: 4px; padding: 6px 12px; font-size: .82rem; }
 
 /* ===== ALMACÉN: leja y contenedor (añadir al final de almacen_vistas.css / styles.css) ===== */
 .alm-sec { margin: 16px 0 8px; font-family: var(--font-display); font-size: 1rem; letter-spacing: .04em; color: var(--text-secondary); }
