@@ -8737,8 +8737,35 @@ function _cqMontar() {
     if (est) est.textContent = n + ' artículo(s)' + (bajo ? ' · ' + bajo + ' por reponer' : '') + (cargadoEn ? ' · cargado a las ' + new Date(cargadoEn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '');
     const bd = el('almacenBtnDensidad');
     if (bd) { bd.textContent = compacta ? '▤ Vista compacta' : '☰ Vista cómoda'; bd.setAttribute('aria-pressed', compacta ? 'true' : 'false'); bd.title = 'Cambiar entre vista compacta y cómoda'; }
+    pintarFamilias();
     const dl = el('almacen-ubicaciones');
     if (dl) dl.innerHTML = [...new Set(items.map(a => normUbic(a.ubicacion)).filter(Boolean))].sort().map(u => '<option value="' + _h(u) + '">').join('');
+  }
+
+  // Chips de familia con contador (según la búsqueda y el modo actuales); sustituyen al desplegable «Familia»
+  function conteoFamilias() {
+    const fam = filtro.fam; filtro.fam = '';
+    const l = filtrados(); filtro.fam = fam;
+    const c = {}; l.forEach(a => { c[a.categoria] = (c[a.categoria] || 0) + 1; });
+    return c;
+  }
+  function pintarFamilias() {
+    const cont = el('almacenFamilias'); if (!cont) return;
+    if (filtro.cat === 'equipos' || !items.length) { cont.innerHTML = ''; return; }
+    const c = conteoFamilias(), total = Object.keys(c).reduce((s, k) => s + c[k], 0);
+    const chip = (v, txt, n) => '<button type="button" class="alm-fam' + (filtro.fam === v ? ' on' : '') + '" data-fam="' + v + '">' + _h(txt) + ' <b>' + n + '</b></button>';
+    cont.innerHTML = chip('', 'Todas', total) + Object.keys(CATS).filter(k => c[k] || filtro.fam === k).map(k => chip(k, CATS[k], c[k] || 0)).join('');
+  }
+
+  // Filas con un separador por letra inicial (solo cuando la lista va ordenada por nombre y no es una leja/contenedor)
+  function htmlFilas(ver) {
+    const letras = filtro.orden === 'nombre' && !(filtro.cat === 'ubic' && norm(filtro.texto).trim() === '');
+    let ant = '';
+    return ver.map(a => {
+      const c = norm(a.nombre).trim().charAt(0), L = /[a-z]/.test(c) ? c.toUpperCase() : '#';
+      const sep = letras && L !== ant ? '<div class="alm-letra">' + L + '</div>' : '';
+      ant = L; return sep + htmlFila(a);
+    }).join('');
   }
 
   function resumen(lista, clave, conContenedores) {
@@ -8803,7 +8830,7 @@ function _cqMontar() {
     }
     if (!l.length && !tarjetas) { cont.innerHTML = cab + '<p class="alm-vacio">' + (filtro.cat === 'bajo' ? 'No hay nada por reponer ✅' : 'Sin resultados con esos filtros.') + '</p>'; return; }
     const ver = l.slice(0, filtro.limite);
-    cont.innerHTML = cab + tarjetas + titulo + (compacta ? '<div class="alm-bloque">' + ver.map(htmlFila).join('') + '</div>' : ver.map(htmlFila).join('')) +
+    cont.innerHTML = cab + tarjetas + titulo + (compacta ? '<div class="alm-bloque">' + htmlFilas(ver) + '</div>' : htmlFilas(ver)) +
       (ver.length < l.length ? '<button type="button" class="button alm-mas" data-accion="mas-resultados">Mostrar más (' + (l.length - ver.length) + ' restantes)</button>' : '');
   }
 
@@ -9091,6 +9118,8 @@ function _cqMontar() {
     const _bd = el('almacenBtnDensidad');
     if (_bd) _bd.addEventListener('click', () => { compacta = !compacta; try { localStorage.setItem('almDensidad', compacta ? 'compacta' : 'comoda'); } catch (e) { /* sin almacenamiento: dura solo esta sesión */ } pintar(); });
     el('almacenFamilia').addEventListener('change', e => { filtro.fam = e.target.value; filtro.limite = PAGINA; pintar(); });
+    const _ff = el('almacenFamilias');
+    if (_ff) _ff.addEventListener('click', e => { const b = e.target.closest('.alm-fam'); if (!b) return; filtro.fam = filtro.fam === b.dataset.fam ? '' : b.dataset.fam; const s = el('almacenFamilia'); if (s) s.value = filtro.fam; filtro.limite = PAGINA; pintar(); });
     el('almacenOrden').addEventListener('change', e => { filtro.orden = e.target.value; filtro.limite = PAGINA; pintarLista(); });
     el('almacenChips').addEventListener('click', e => { const b = e.target.closest('.alm-chip'); if (!b) return; filtro.cat = b.dataset.cat; filtro.limite = PAGINA; abierto = null; if (filtro.cat === 'ubic') { grupoActual = null; subActual = null; } pintar(); });
     el('almacenBtnRefrescar').addEventListener('click', () => cargar(true));

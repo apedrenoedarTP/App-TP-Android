@@ -1753,6 +1753,19 @@ details.plegable > .plegable-cuerpo { padding: 18px 18px 6px; }
 .alm-bloque .alm-num small { font-size: .62rem; }
 .alm-bloque .alm-compra { margin-top: 2px; font-size: .76rem; }
 .alm-bloque .alm-pedir { min-height: 36px; margin-top: 4px; padding: 6px 12px; font-size: .82rem; }
+/* Chips de familia con contador (sustituyen al desplegable «Familia») y separadores por letra */
+.alm-barra .alm-orden:has(#almacenFamilia) { display: none; }
+.alm-fams { display: flex; flex: 1 1 100%; gap: 6px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+.alm-fams:empty { display: none; }
+.alm-barra .alm-chips { order: 1; }
+.alm-barra .alm-orden { order: 2; }
+.alm-barra .alm-fams { order: 3; }
+@media (min-width: 761px) { .alm-barra .alm-orden { flex: 0 0 230px; } }
+.alm-fam { flex: 0 0 auto; min-height: 36px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-card); color: var(--text-secondary); font: inherit; font-size: .85rem; white-space: nowrap; cursor: pointer; }
+.alm-fam b { margin-left: 4px; color: var(--text-primary); font-weight: 600; }
+.alm-fam.on { background: var(--blue-dim); border-color: var(--blue); color: var(--text-primary); }
+.alm-letra { margin: 10px 2px 4px; font-family: var(--font-display); font-size: .8rem; letter-spacing: .08em; color: var(--text-muted); }
+.alm-bloque .alm-letra { margin: 0; padding: 3px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
 
 /* ===== ALMACÉN: leja y contenedor (añadir al final de almacen_vistas.css / styles.css) ===== */
 .alm-sec { margin: 16px 0 8px; font-family: var(--font-display); font-size: 1rem; letter-spacing: .04em; color: var(--text-secondary); }
